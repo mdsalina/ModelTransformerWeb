@@ -1,4 +1,5 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { useState, useEffect } from 'react';
+import type { Dispatch, SetStateAction, MouseEvent as ReactMouseEvent, TouchEvent as ReactTouchEvent } from 'react';
 import type { FiltersState, FileDetails, JsonModelData } from '../types';
 import { 
   ExpandMoreIcon
@@ -70,6 +71,123 @@ export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thick
         }
       }
     }));
+  };
+
+  const startDrag = (
+    type: 'walls' | 'beams' | 'slabs',
+    bound: 'min' | 'max',
+    e: ReactMouseEvent<HTMLDivElement> | ReactTouchEvent<HTMLDivElement>
+  ) => {
+    e.preventDefault();
+    const isTouch = 'touches' in e;
+    const startX = isTouch ? e.touches[0].clientX : e.clientX;
+    const startVal = filters.thickness[type][bound];
+    const minLimit = thicknessLimits[type].min;
+    const maxLimit = thicknessLimits[type].max;
+    const range = maxLimit - minLimit;
+    if (range <= 0) return;
+
+    const container = (e.currentTarget as HTMLElement).parentElement;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const width = rect.width;
+    if (width <= 0) return;
+
+    const handleMove = (clientX: number) => {
+      const deltaX = clientX - startX;
+      const deltaValue = (deltaX / width) * range;
+      const rawValue = startVal + deltaValue;
+
+      // Snap to nearest multiple of 50mm
+      let newValue = Math.round(rawValue / 50) * 50;
+
+      if (bound === 'min') {
+        newValue = Math.max(minLimit, Math.min(filters.thickness[type].max, newValue));
+      } else {
+        newValue = Math.max(filters.thickness[type].min, Math.min(maxLimit, newValue));
+      }
+
+      handleThicknessChange(type, bound, newValue);
+    };
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      handleMove(moveEvent.clientX);
+    };
+
+    const onTouchMove = (moveEvent: TouchEvent) => {
+      if (moveEvent.touches.length > 0) {
+        handleMove(moveEvent.touches[0].clientX);
+      }
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    const onTouchEnd = () => {
+      document.removeEventListener('touchmove', onTouchMove);
+      document.removeEventListener('touchend', onTouchEnd);
+    };
+
+    if (isTouch) {
+      document.addEventListener('touchmove', onTouchMove, { passive: false });
+      document.addEventListener('touchend', onTouchEnd);
+    } else {
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    }
+  };
+
+  const [localThickness, setLocalThickness] = useState({
+    walls: { min: String(filters.thickness.walls.min), max: String(filters.thickness.walls.max) },
+    beams: { min: String(filters.thickness.beams.min), max: String(filters.thickness.beams.max) },
+    slabs: { min: String(filters.thickness.slabs.min), max: String(filters.thickness.slabs.max) }
+  });
+
+  useEffect(() => {
+    setLocalThickness({
+      walls: { min: String(filters.thickness.walls.min), max: String(filters.thickness.walls.max) },
+      beams: { min: String(filters.thickness.beams.min), max: String(filters.thickness.beams.max) },
+      slabs: { min: String(filters.thickness.slabs.min), max: String(filters.thickness.slabs.max) }
+    });
+  }, [filters.thickness]);
+
+  const handleLocalThicknessChange = (type: 'walls' | 'beams' | 'slabs', bound: 'min' | 'max', value: string) => {
+    setLocalThickness(prev => ({
+      ...prev,
+      [type]: {
+        ...prev[type],
+        [bound]: value
+      }
+    }));
+  };
+
+  const applyLocalThickness = (type: 'walls' | 'beams' | 'slabs', bound: 'min' | 'max') => {
+    const minLimit = thicknessLimits[type].min;
+    const maxLimit = thicknessLimits[type].max;
+    const rawVal = localThickness[type][bound];
+
+    const parsed = parseInt(rawVal, 10);
+    if (isNaN(parsed)) {
+      setLocalThickness(prev => ({
+        ...prev,
+        [type]: {
+          ...prev[type],
+          [bound]: String(filters.thickness[type][bound])
+        }
+      }));
+      return;
+    }
+
+    let clampedValue = parsed;
+    if (bound === 'min') {
+      clampedValue = Math.max(minLimit, Math.min(filters.thickness[type].max, parsed));
+    } else {
+      clampedValue = Math.max(filters.thickness[type].min, Math.min(maxLimit, parsed));
+    }
+
+    handleThicknessChange(type, bound, clampedValue);
   };
 
   return (
@@ -281,13 +399,14 @@ export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thick
                 <div className="flex items-center gap-3">
                   <input 
                     type="number"
-                    min={thicknessLimits.walls.min}
-                    max={thicknessLimits.walls.max}
                     className="w-20 bg-surface-container border border-outline-variant/30 rounded-lg px-2 py-1.5 text-sm font-body text-on-surface text-center focus:outline-none focus:border-primary"
-                    value={filters.thickness.walls.min}
-                    onChange={(e) => {
-                      const val = Math.max(thicknessLimits.walls.min, Math.min(filters.thickness.walls.max, parseInt(e.target.value) || 0));
-                      handleThicknessChange('walls', 'min', val);
+                    value={localThickness.walls.min}
+                    onChange={(e) => handleLocalThicknessChange('walls', 'min', e.target.value)}
+                    onBlur={() => applyLocalThickness('walls', 'min')}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        applyLocalThickness('walls', 'min');
+                      }
                     }}
                   />
                   <div className="flex-1 h-1 bg-surface-container-high rounded-full relative select-none">
@@ -301,28 +420,33 @@ export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thick
                     ></div>
                     {/* Left knob */}
                     <div 
-                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -ml-2 shadow ring-2 ring-surface"
+                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -ml-2 shadow ring-2 ring-surface cursor-pointer hover:scale-110 active:scale-125 transition-transform duration-100"
                       style={{
                         left: `${((filters.thickness.walls.min - thicknessLimits.walls.min) / (thicknessLimits.walls.max - thicknessLimits.walls.min || 1)) * 100}%`
                       }}
+                      onMouseDown={(e) => startDrag('walls', 'min', e)}
+                      onTouchStart={(e) => startDrag('walls', 'min', e)}
                     ></div>
                     {/* Right knob */}
                     <div 
-                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -mr-2 shadow ring-2 ring-surface"
+                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -mr-2 shadow ring-2 ring-surface cursor-pointer hover:scale-110 active:scale-125 transition-transform duration-100"
                       style={{
                         left: `${((filters.thickness.walls.max - thicknessLimits.walls.min) / (thicknessLimits.walls.max - thicknessLimits.walls.min || 1)) * 100}%`
                       }}
+                      onMouseDown={(e) => startDrag('walls', 'max', e)}
+                      onTouchStart={(e) => startDrag('walls', 'max', e)}
                     ></div>
                   </div>
                   <input 
                     type="number"
-                    min={filters.thickness.walls.min}
-                    max={thicknessLimits.walls.max}
                     className="w-20 bg-surface-container border border-outline-variant/30 rounded-lg px-2 py-1.5 text-sm font-body text-on-surface text-center focus:outline-none focus:border-primary"
-                    value={filters.thickness.walls.max}
-                    onChange={(e) => {
-                      const val = Math.max(filters.thickness.walls.min, Math.min(thicknessLimits.walls.max, parseInt(e.target.value) || 0));
-                      handleThicknessChange('walls', 'max', val);
+                    value={localThickness.walls.max}
+                    onChange={(e) => handleLocalThicknessChange('walls', 'max', e.target.value)}
+                    onBlur={() => applyLocalThickness('walls', 'max')}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        applyLocalThickness('walls', 'max');
+                      }
                     }}
                   />
                 </div>
@@ -336,13 +460,14 @@ export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thick
                 <div className="flex items-center gap-3">
                   <input 
                     type="number"
-                    min={thicknessLimits.beams.min}
-                    max={thicknessLimits.beams.max}
                     className="w-20 bg-surface-container border border-outline-variant/30 rounded-lg px-2 py-1.5 text-sm font-body text-on-surface text-center focus:outline-none focus:border-primary"
-                    value={filters.thickness.beams.min}
-                    onChange={(e) => {
-                      const val = Math.max(thicknessLimits.beams.min, Math.min(filters.thickness.beams.max, parseInt(e.target.value) || 0));
-                      handleThicknessChange('beams', 'min', val);
+                    value={localThickness.beams.min}
+                    onChange={(e) => handleLocalThicknessChange('beams', 'min', e.target.value)}
+                    onBlur={() => applyLocalThickness('beams', 'min')}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        applyLocalThickness('beams', 'min');
+                      }
                     }}
                   />
                   <div className="flex-1 h-1 bg-surface-container-high rounded-full relative select-none">
@@ -354,27 +479,32 @@ export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thick
                       }}
                     ></div>
                     <div 
-                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -ml-2 shadow ring-2 ring-surface"
+                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -ml-2 shadow ring-2 ring-surface cursor-pointer hover:scale-110 active:scale-125 transition-transform duration-100"
                       style={{
                         left: `${((filters.thickness.beams.min - thicknessLimits.beams.min) / (thicknessLimits.beams.max - thicknessLimits.beams.min || 1)) * 100}%`
                       }}
+                      onMouseDown={(e) => startDrag('beams', 'min', e)}
+                      onTouchStart={(e) => startDrag('beams', 'min', e)}
                     ></div>
                     <div 
-                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -mr-2 shadow ring-2 ring-surface"
+                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -mr-2 shadow ring-2 ring-surface cursor-pointer hover:scale-110 active:scale-125 transition-transform duration-100"
                       style={{
                         left: `${((filters.thickness.beams.max - thicknessLimits.beams.min) / (thicknessLimits.beams.max - thicknessLimits.beams.min || 1)) * 100}%`
                       }}
+                      onMouseDown={(e) => startDrag('beams', 'max', e)}
+                      onTouchStart={(e) => startDrag('beams', 'max', e)}
                     ></div>
                   </div>
                   <input 
                     type="number"
-                    min={filters.thickness.beams.min}
-                    max={thicknessLimits.beams.max}
                     className="w-20 bg-surface-container border border-outline-variant/30 rounded-lg px-2 py-1.5 text-sm font-body text-on-surface text-center focus:outline-none focus:border-primary"
-                    value={filters.thickness.beams.max}
-                    onChange={(e) => {
-                      const val = Math.max(filters.thickness.beams.min, Math.min(thicknessLimits.beams.max, parseInt(e.target.value) || 0));
-                      handleThicknessChange('beams', 'max', val);
+                    value={localThickness.beams.max}
+                    onChange={(e) => handleLocalThicknessChange('beams', 'max', e.target.value)}
+                    onBlur={() => applyLocalThickness('beams', 'max')}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        applyLocalThickness('beams', 'max');
+                      }
                     }}
                   />
                 </div>
@@ -388,13 +518,14 @@ export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thick
                 <div className="flex items-center gap-3">
                   <input 
                     type="number"
-                    min={thicknessLimits.slabs.min}
-                    max={thicknessLimits.slabs.max}
                     className="w-20 bg-surface-container border border-outline-variant/30 rounded-lg px-2 py-1.5 text-sm font-body text-on-surface text-center focus:outline-none focus:border-primary"
-                    value={filters.thickness.slabs.min}
-                    onChange={(e) => {
-                      const val = Math.max(thicknessLimits.slabs.min, Math.min(filters.thickness.slabs.max, parseInt(e.target.value) || 0));
-                      handleThicknessChange('slabs', 'min', val);
+                    value={localThickness.slabs.min}
+                    onChange={(e) => handleLocalThicknessChange('slabs', 'min', e.target.value)}
+                    onBlur={() => applyLocalThickness('slabs', 'min')}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        applyLocalThickness('slabs', 'min');
+                      }
                     }}
                   />
                   <div className="flex-1 h-1 bg-surface-container-high rounded-full relative select-none">
@@ -406,27 +537,32 @@ export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thick
                       }}
                     ></div>
                     <div 
-                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -ml-2 shadow ring-2 ring-surface"
+                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -ml-2 shadow ring-2 ring-surface cursor-pointer hover:scale-110 active:scale-125 transition-transform duration-100"
                       style={{
                         left: `${((filters.thickness.slabs.min - thicknessLimits.slabs.min) / (thicknessLimits.slabs.max - thicknessLimits.slabs.min || 1)) * 100}%`
                       }}
+                      onMouseDown={(e) => startDrag('slabs', 'min', e)}
+                      onTouchStart={(e) => startDrag('slabs', 'min', e)}
                     ></div>
                     <div 
-                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -mr-2 shadow ring-2 ring-surface"
+                      className="absolute w-4 h-4 bg-primary rounded-full -mt-1.5 -mr-2 shadow ring-2 ring-surface cursor-pointer hover:scale-110 active:scale-125 transition-transform duration-100"
                       style={{
                         left: `${((filters.thickness.slabs.max - thicknessLimits.slabs.min) / (thicknessLimits.slabs.max - thicknessLimits.slabs.min || 1)) * 100}%`
                       }}
+                      onMouseDown={(e) => startDrag('slabs', 'max', e)}
+                      onTouchStart={(e) => startDrag('slabs', 'max', e)}
                     ></div>
                   </div>
                   <input 
                     type="number"
-                    min={filters.thickness.slabs.min}
-                    max={thicknessLimits.slabs.max}
                     className="w-20 bg-surface-container border border-outline-variant/30 rounded-lg px-2 py-1.5 text-sm font-body text-on-surface text-center focus:outline-none focus:border-primary"
-                    value={filters.thickness.slabs.max}
-                    onChange={(e) => {
-                      const val = Math.max(filters.thickness.slabs.min, Math.min(thicknessLimits.slabs.max, parseInt(e.target.value) || 0));
-                      handleThicknessChange('slabs', 'max', val);
+                    value={localThickness.slabs.max}
+                    onChange={(e) => handleLocalThicknessChange('slabs', 'max', e.target.value)}
+                    onBlur={() => applyLocalThickness('slabs', 'max')}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        applyLocalThickness('slabs', 'max');
+                      }
                     }}
                   />
                 </div>

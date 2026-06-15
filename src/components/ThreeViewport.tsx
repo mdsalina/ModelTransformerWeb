@@ -386,7 +386,7 @@ export const ThreeViewport = ({
 
         // Convert coordinates:
         // JSON Z is up elevation -> maps to Three.js Y
-        // JSON Y is plan north-south -> maps to Three.js Z
+        // JSON Y is plan north-south -> maps to Three.js -Z (inverted to correct vertical mirroring in plan view)
         // JSON X is plan east-west -> maps to Three.js X
         const convertCoords = (x: number, y: number, z: number): THREE.Vector3 => {
           // Apply rotation around Z-axis (which is vertical in JSON coordinate system, mapping to Three.js Y-axis)
@@ -396,7 +396,7 @@ export const ThreeViewport = ({
             rx = x * Math.cos(rotAlpha) - y * Math.sin(rotAlpha);
             ry = x * Math.sin(rotAlpha) + y * Math.cos(rotAlpha);
           }
-          return new THREE.Vector3(rx + tx, z + tz, ry + ty);
+          return new THREE.Vector3(rx + tx, z + tz, -ry - ty);
         };
 
         // Get active level elevation for grid drawing
@@ -620,22 +620,22 @@ export const ThreeViewport = ({
                 // Flatten vertices to 2D shape on XY coordinates (using Three.js coordinate mapping)
                 const shape = new THREE.Shape();
                 const p0 = outline[0];
-                // Invert Y coordinate to align with Three.js Z-axis correctly
-                shape.moveTo(p0[0], -p0[1]);
+                // Use original Y coordinate (rotateX(-PI/2) will project Y to -Z correctly)
+                shape.moveTo(p0[0], p0[1]);
 
                 for (let i = 1; i < outline.length; i++) {
-                  shape.lineTo(outline[i][0], -outline[i][1]);
+                  shape.lineTo(outline[i][0], outline[i][1]);
                 }
                 shape.closePath();
 
-                // Add openings with inverted Y coordinates
+                // Add openings with original Y coordinates
                 if (slab.location.openings) {
                   slab.location.openings.forEach((op) => {
                     if (op.outline && op.outline.length >= 3) {
                       const holePath = new THREE.Path();
-                      holePath.moveTo(op.outline[0][0], -op.outline[0][1]);
+                      holePath.moveTo(op.outline[0][0], op.outline[0][1]);
                       for (let i = 1; i < op.outline.length; i++) {
-                        holePath.lineTo(op.outline[i][0], -op.outline[i][1]);
+                        holePath.lineTo(op.outline[i][0], op.outline[i][1]);
                       }
                       holePath.closePath();
                       shape.holes.push(holePath);
@@ -666,11 +666,11 @@ export const ThreeViewport = ({
                 
                 // Elevate slab to its level Z coordinate (mapped to Three.js Y)
                 const elevation = p0[2] + tz;
-                mesh.position.set(tx, elevation, ty);
+                mesh.position.set(tx, elevation, -ty);
                 
                 // Apply rotation to slab mesh if process rotation is set
                 if (rotAlpha !== 0) {
-                  mesh.rotation.y = -rotAlpha;
+                  mesh.rotation.y = rotAlpha;
                 }
                 mesh.castShadow = true; // Enable shadow casting for slabs
                 mesh.receiveShadow = true;
