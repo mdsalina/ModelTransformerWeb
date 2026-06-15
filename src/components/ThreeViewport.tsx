@@ -95,9 +95,11 @@ export const ThreeViewport = ({
   const [showGroundGrid, setShowGroundGrid] = useState(true);
   const [showDebugPanel, setShowDebugPanel] = useState(true);
   const [enableShadows, setEnableShadows] = useState(true);
+  const [enableTransparency, setEnableTransparency] = useState(false);
   
   const [selectedLevelId, setSelectedLevelId] = useState<string>('3d');
   const [selectedGridName, setSelectedGridName] = useState<string>('none');
+  const [selectedElement, setSelectedElement] = useState<{ id: string; type: 'wall' | 'beam' | 'slab'; data: any } | null>(null);
 
   // Ref to avoid stale closures in the single-instance animation loop
   const selectedLevelIdRef = useRef<string>('3d');
@@ -139,11 +141,12 @@ export const ThreeViewport = ({
     }
   };
 
-  // Reset fit-camera ref and selected level/grid when modelData changes
+  // Reset fit-camera ref, selected level/grid, and selected element when modelData changes
   useEffect(() => {
     hasFitCameraRef.current = false;
     setSelectedLevelId('3d');
     setSelectedGridName('none');
+    setSelectedElement(null);
   }, [modelData]);
 
   // Sync ground grid visibility directly using ref
@@ -306,6 +309,8 @@ export const ThreeViewport = ({
     let resizeObserver: ResizeObserver | null = null;
     let controls: OrbitControls | null = null;
     let renderer: THREE.WebGLRenderer | null = null;
+    let onPointerDown: ((event: PointerEvent) => void) | null = null;
+    let onPointerUp: ((event: PointerEvent) => void) | null = null;
 
     try {
       // 1. Create Scene
@@ -481,6 +486,55 @@ export const ThreeViewport = ({
       });
       resizeObserver.observe(mountRef.current);
 
+      let pointerDownX = 0;
+      let pointerDownY = 0;
+
+      onPointerDown = (event: PointerEvent) => {
+        pointerDownX = event.clientX;
+        pointerDownY = event.clientY;
+      };
+
+      onPointerUp = (event: PointerEvent) => {
+        const diffX = Math.abs(event.clientX - pointerDownX);
+        const diffY = Math.abs(event.clientY - pointerDownY);
+        if (diffX < 3 && diffY < 3) {
+          const activeCamera = activeCameraRef.current;
+          if (!renderer || !scene || !activeCamera) return;
+
+          const rect = renderer.domElement.getBoundingClientRect();
+          const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+          const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+          const raycaster = new THREE.Raycaster();
+          raycaster.setFromCamera(new THREE.Vector2(x, y), activeCamera);
+
+          const intersects = raycaster.intersectObjects(scene.children, true);
+          
+          let hitObject: THREE.Object3D | null = null;
+          for (const intersect of intersects) {
+            let current: THREE.Object3D | null = intersect.object;
+            while (current) {
+              if (current.userData && current.userData.id) {
+                hitObject = current;
+                break;
+              }
+              current = current.parent;
+            }
+            if (hitObject) break;
+          }
+
+          if (hitObject) {
+            const { id, type, data } = hitObject.userData;
+            setSelectedElement({ id, type, data });
+          } else {
+            setSelectedElement(null);
+          }
+        }
+      };
+
+      renderer.domElement.addEventListener('pointerdown', onPointerDown);
+      renderer.domElement.addEventListener('pointerup', onPointerUp);
+
     } catch (e: any) {
       console.error('Three.js Init Error:', e);
       setErrorLog('Init Error: ' + (e.message || String(e)));
@@ -495,6 +549,12 @@ export const ThreeViewport = ({
       gridHelperRef.current = null; // Clear refs on cleanup
       dirLightRef.current = null;
       
+      if (renderer && renderer.domElement) {
+        // Remove event listeners
+        if (onPointerDown) renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+        if (onPointerUp) renderer.domElement.removeEventListener('pointerup', onPointerUp);
+      }
+
       if (renderer && renderer.domElement && mountRef.current) {
         try {
           mountRef.current.removeChild(renderer.domElement);
@@ -526,11 +586,13 @@ export const ThreeViewport = ({
       });
       toRemove.forEach((obj) => {
         scene.remove(obj);
-        obj.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
+        obj.traverse((child: any) => {
+          if (child.geometry) {
             child.geometry.dispose();
+          }
+          if (child.material) {
             if (Array.isArray(child.material)) {
-              child.material.forEach((m) => m.dispose());
+              child.material.forEach((m: any) => m.dispose());
             } else {
               child.material.dispose();
             }
@@ -711,26 +773,45 @@ export const ThreeViewport = ({
                 // Create a 3D box geometry for the wall
                 const geometry = new THREE.BoxGeometry(thickness, height, length);
                 
-                // Matte solid concrete grey for walls
-                const material = new THREE.MeshStandardMaterial({
-                  color: 0x94a3b8, // Slate concrete grey
-                  roughness: 0.8,
-                  metalness: 0.1
-                });
-                
-                const mesh = new THREE.Mesh(geometry, material);
-                
-                // Position at the center of the wall segment
-                const center = new THREE.Vector3().copy(pStart).add(pEnd).multiplyScalar(0.5);
-                center.y += height / 2; // raise by half height
-                mesh.position.copy(center);
-                
-                // Rotate to align with the wall direction (looking towards pEnd)
-                mesh.lookAt(pEnd.x, center.y, pEnd.z);
-                
-                mesh.castShadow = true;
-                mesh.receiveShadow = true;
-                modelGroup.add(mesh);
+                 // Matte solid concrete grey for walls (or blue if selected)
+                 const isSelected = selectedElement && selectedElement.id === wall.revit_id;
+                 const material = new THREE.MeshStandardMaterial({
+                   color: isSelected ? 0x2563eb : 0x94a3b8, // Blue if selected, Slate concrete grey otherwise
+                   roughness: isSelected ? 0.6 : 0.8,
+                   metalness: isSelected ? 0.2 : 0.1,
+                   transparent: enableTransparency,
+                   opacity: enableTransparency ? 0.65 : 1.0
+                 });
+                 
+                 const mesh = new THREE.Mesh(geometry, material);
+                 mesh.userData = {
+                   id: wall.revit_id,
+                   type: 'wall',
+                   data: wall
+                 };
+
+                 const shouldAddEdges = (enableTransparency && (selectedLevelId !== '3d' || selectedGridName !== 'none')) || (isSelected && enableTransparency);
+                 if (shouldAddEdges) {
+                   const edgesGeometry = new THREE.EdgesGeometry(geometry);
+                   const edgesMaterial = new THREE.LineBasicMaterial({
+                     color: isSelected ? 0x1d4ed8 : 0x334155, // Solid blue if selected, Dark slate otherwise
+                     linewidth: isSelected ? 2 : 1
+                   });
+                   const edgeSegments = new THREE.LineSegments(edgesGeometry, edgesMaterial);
+                   mesh.add(edgeSegments);
+                 }
+                 
+                 // Position at the center of the wall segment
+                 const center = new THREE.Vector3().copy(pStart).add(pEnd).multiplyScalar(0.5);
+                 center.y += height / 2; // raise by half height
+                 mesh.position.copy(center);
+                 
+                 // Rotate to align with the wall direction (looking towards pEnd)
+                 mesh.lookAt(pEnd.x, center.y, pEnd.z);
+                 
+                 mesh.castShadow = true;
+                 mesh.receiveShadow = true;
+                 modelGroup.add(mesh);
                 wallsCount++;
               }
             } catch (e) {
@@ -796,21 +877,40 @@ export const ThreeViewport = ({
                 // Draw a box geometry connecting them
                 const beamGeo = new THREE.BoxGeometry(thickness, height, distance);
                 
-                // Matte solid concrete grey for beams
-                const beamMat = new THREE.MeshStandardMaterial({
-                  color: 0x64748b, // Darker concrete grey
-                  roughness: 0.8,
-                  metalness: 0.1
-                });
+                 // Matte solid concrete grey for beams (or blue if selected)
+                 const isSelected = selectedElement && selectedElement.id === beam.revit_id;
+                 const beamMat = new THREE.MeshStandardMaterial({
+                   color: isSelected ? 0x2563eb : 0x64748b, // Blue if selected, Darker concrete grey otherwise
+                   roughness: isSelected ? 0.6 : 0.8,
+                   metalness: isSelected ? 0.2 : 0.1,
+                   transparent: enableTransparency,
+                   opacity: enableTransparency ? 0.65 : 1.0
+                 });
 
-                const beamMesh = new THREE.Mesh(beamGeo, beamMat);
-                beamMesh.position.copy(pStart).add(pEnd).multiplyScalar(0.5);
-                
-                // Orient beam mesh to face pEnd from pStart
-                beamMesh.lookAt(pEnd);
-                beamMesh.castShadow = true;
-                beamMesh.receiveShadow = true;
-                modelGroup.add(beamMesh);
+                 const beamMesh = new THREE.Mesh(beamGeo, beamMat);
+                 beamMesh.userData = {
+                   id: beam.revit_id,
+                   type: 'beam',
+                   data: beam
+                 };
+
+                 const shouldAddBeamEdges = (enableTransparency && (selectedLevelId !== '3d' || selectedGridName !== 'none')) || (isSelected && enableTransparency);
+                 if (shouldAddBeamEdges) {
+                   const edgesGeometry = new THREE.EdgesGeometry(beamGeo);
+                   const edgesMaterial = new THREE.LineBasicMaterial({
+                     color: isSelected ? 0x1d4ed8 : 0x1e293b, // Solid blue if selected, Darker grey otherwise
+                     linewidth: isSelected ? 2 : 1
+                   });
+                   const edgeSegments = new THREE.LineSegments(edgesGeometry, edgesMaterial);
+                   beamMesh.add(edgeSegments);
+                 }
+                 beamMesh.position.copy(pStart).add(pEnd).multiplyScalar(0.5);
+                 
+                 // Orient beam mesh to face pEnd from pStart
+                 beamMesh.lookAt(pEnd);
+                 beamMesh.castShadow = true;
+                 beamMesh.receiveShadow = true;
+                 modelGroup.add(beamMesh);
                 beamsCount++;
               }
             } catch (e) {
@@ -909,15 +1009,34 @@ export const ThreeViewport = ({
                 // Rotate shape geometry so XY horizontal plane matches Three.js XZ plane
                 geometry.rotateX(-Math.PI / 2);
 
-                // Matte solid concrete grey for slabs
-                const material = new THREE.MeshStandardMaterial({
-                  color: 0xcbd5e1, // Lighter concrete grey
-                  roughness: 0.9,
-                  metalness: 0.1,
-                  side: THREE.DoubleSide
-                });
+                 // Matte solid concrete grey for slabs (or blue if selected)
+                 const isSelected = selectedElement && selectedElement.id === slab.revit_id;
+                 const material = new THREE.MeshStandardMaterial({
+                   color: isSelected ? 0x2563eb : 0xcbd5e1, // Blue if selected, Lighter concrete grey otherwise
+                   roughness: isSelected ? 0.6 : 0.9,
+                   metalness: isSelected ? 0.2 : 0.1,
+                   side: THREE.DoubleSide,
+                   transparent: enableTransparency,
+                   opacity: enableTransparency ? 0.65 : 1.0
+                 });
 
-                const mesh = new THREE.Mesh(geometry, material);
+                 const mesh = new THREE.Mesh(geometry, material);
+                 mesh.userData = {
+                   id: slab.revit_id,
+                   type: 'slab',
+                   data: slab
+                 };
+
+                 const shouldAddSlabEdges = (enableTransparency && (selectedLevelId !== '3d' || selectedGridName !== 'none')) || (isSelected && enableTransparency);
+                 if (shouldAddSlabEdges) {
+                   const edgesGeometry = new THREE.EdgesGeometry(geometry);
+                   const edgesMaterial = new THREE.LineBasicMaterial({
+                     color: isSelected ? 0x1d4ed8 : 0x475569, // Solid blue if selected, Medium grey otherwise
+                     linewidth: isSelected ? 2 : 1
+                   });
+                   const edgeSegments = new THREE.LineSegments(edgesGeometry, edgesMaterial);
+                   mesh.add(edgeSegments);
+                 }
                 
                 // Elevate slab to its level Z coordinate (mapped to Three.js Y)
                 const elevation = p0[2] + tz;
@@ -1036,7 +1155,7 @@ export const ThreeViewport = ({
       console.error('Geometry update error:', err);
       setErrorLog(err.message || String(err));
     }
-  }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation?.dx, processTranslation?.dy, processTranslation?.dz, processTranslation?.alpha, selectedLevelId, selectedGridName]);
+  }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation?.dx, processTranslation?.dy, processTranslation?.dz, processTranslation?.alpha, selectedLevelId, selectedGridName, enableTransparency, selectedElement]);
 
   const handleGoUp = () => {
     if (!sortedLevels.length) return;
@@ -1289,8 +1408,8 @@ export const ThreeViewport = ({
 
         .options-column {
           position: absolute;
-          top: 320px; /* Shifted down to accommodate both Planta and Elevacion view cards */
-          right: 58px; /* Centered relative to the view cards */
+          bottom: 16px;
+          right: 16px;
           z-index: 100;
           display: flex;
           flex-direction: column;
@@ -1448,6 +1567,18 @@ export const ThreeViewport = ({
           </svg>
         </button>
 
+        {/* Toggle Transparency */}
+        <button 
+          onClick={() => setEnableTransparency(prev => !prev)}
+          className={`option-btn ${enableTransparency ? 'active' : ''}`}
+          title={enableTransparency ? "Desactivar transparencia" : "Activar transparencia"}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+            <rect x="3" y="3" width="12" height="12" rx="2" />
+            <rect x="9" y="9" width="12" height="12" rx="2" strokeDasharray="3 3" />
+          </svg>
+        </button>
+
         {/* Toggle Debug Panel */}
         <button 
           onClick={() => setShowDebugPanel(prev => !prev)}
@@ -1474,6 +1605,71 @@ export const ThreeViewport = ({
               <div>Grids: {modelData.grids?.length || 0} (Visible: {showGrids && filters.elements.grillas ? 'Yes' : 'No'})</div>
               <div>Checked Levels: {filters.levels.filter(l => l.checked).length} / {filters.levels.length}</div>
             </>
+          )}
+          {selectedElement && (
+            <div className="mt-2 border-t border-white/20 pt-2 text-[10px] text-blue-300">
+              <h5 className="font-bold mb-1 text-blue-400">Elemento Seleccionado:</h5>
+              <div>Tipo: {selectedElement.type.toUpperCase()}</div>
+              <div>ID Revit: {selectedElement.id}</div>
+              <div>Sección: {selectedElement.data.section}</div>
+              <div>Nivel: {selectedElement.data.level}</div>
+              {selectedElement.type === 'wall' && (
+                <>
+                  <div>Altura: {selectedElement.data.location.height ?? 'N/A'} m</div>
+                  {(() => {
+                    const outline = selectedElement.data.location.outline;
+                    if (outline && outline.length >= 2) {
+                      let maxDist = -1;
+                      for (let i = 0; i < outline.length; i++) {
+                        for (let j = i + 1; j < outline.length; j++) {
+                          const dx = outline[i][0] - outline[j][0];
+                          const dy = outline[i][1] - outline[j][1];
+                          const dist = Math.sqrt(dx * dx + dy * dy);
+                          if (dist > maxDist) maxDist = dist;
+                        }
+                      }
+                      return <div>Longitud: {maxDist.toFixed(2)} m</div>;
+                    }
+                    return null;
+                  })()}
+                </>
+              )}
+              {selectedElement.type === 'beam' && selectedElement.data.location.start && selectedElement.data.location.end && (
+                <>
+                  {(() => {
+                    const start = selectedElement.data.location.start;
+                    const end = selectedElement.data.location.end;
+                    const dx = end[0] - start[0];
+                    const dy = end[1] - start[1];
+                    const dz = end[2] - start[2];
+                    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                    return <div>Longitud: {len.toFixed(2)} m</div>;
+                  })()}
+                </>
+              )}
+              {selectedElement.type === 'slab' && (
+                <>
+                  {(() => {
+                    const outline = selectedElement.data.location.outline;
+                    return <div>Vértices: {outline ? outline.length : 0}</div>;
+                  })()}
+                </>
+              )}
+              {(() => {
+                const sec = modelData?.sections.find(s => s.code_name === selectedElement.data.section);
+                if (sec) {
+                  return (
+                    <div className="mt-1 border-t border-white/10 pt-1 text-[9px] text-gray-400">
+                      <div>Material: {sec.material}</div>
+                      {sec.parameters.thickness !== undefined && <div>Espesor: {sec.parameters.thickness * 1000} mm</div>}
+                      {sec.parameters.width !== undefined && <div>Ancho: {sec.parameters.width * 1000} mm</div>}
+                      {sec.parameters.height !== undefined && <div>Peralte: {sec.parameters.height * 1000} mm</div>}
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+            </div>
           )}
           {errorLog && (
             <div className="mt-1 border-t border-red-500/50 pt-1 text-red-400 font-semibold max-h-24 overflow-y-auto">
