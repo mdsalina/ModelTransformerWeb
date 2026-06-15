@@ -11,6 +11,59 @@ interface ThreeViewportProps {
   processTranslation?: { dx: number; dy: number; dz: number; alpha: number };
 }
 
+// Helper to calculate distance from a point (x, y) to an infinite line defined by grid (p1, p2)
+const getDistanceToGridLine = (x: number, y: number, grid: { p1: [number, number]; p2: [number, number] }): number => {
+  const dx = grid.p2[0] - grid.p1[0];
+  const dy = grid.p2[1] - grid.p1[1];
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len === 0) return 0;
+  const A = -dy / len;
+  const B = dx / len;
+  const C = -(A * grid.p1[0] + B * grid.p1[1]);
+  return Math.abs(A * x + B * y + C);
+};
+
+// Helper to project point (x, y) onto grid line segment, returning parameter t (0 to 1)
+const getGridProjectionT = (x: number, y: number, grid: { p1: [number, number]; p2: [number, number] }): number => {
+  const dx = grid.p2[0] - grid.p1[0];
+  const dy = grid.p2[1] - grid.p1[1];
+  const denom = dx * dx + dy * dy;
+  if (denom === 0) return 0;
+  return ((x - grid.p1[0]) * dx + (y - grid.p1[1]) * dy) / denom;
+};
+
+// Helper to check if two intervals [a, b] and [c, d] overlap
+const intervalsOverlap = (a: number, b: number, c: number, d: number): boolean => {
+  return Math.max(a, c) <= Math.min(b, d);
+};
+
+// Helper to check if line segment p-q intersects segment r-s
+const lineSegmentsIntersect = (
+  p1: [number, number],
+  p2: [number, number],
+  q1: [number, number],
+  q2: [number, number]
+): boolean => {
+  const det = (p2[0] - p1[0]) * (q2[1] - q1[1]) - (p2[1] - p1[1]) * (q2[0] - q1[0]);
+  if (det === 0) return false; // Parallel
+  const t = ((q1[0] - p1[0]) * (q2[1] - q1[1]) - (q1[1] - p1[1]) * (q2[0] - q1[0])) / det;
+  const u = ((q1[0] - p1[0]) * (p2[1] - p1[1]) - (q1[1] - p1[1]) * (p2[0] - p1[0])) / det;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+};
+
+// Helper to check if point is inside polygon (ray-casting algorithm)
+const isPointInPolygon = (p: [number, number], polygon: [number, number, number][]): boolean => {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
+    const intersect = ((yi > p[1]) !== (yj > p[1]))
+        && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+};
+
 export const ThreeViewport = ({
   modelData,
   filters,
@@ -42,7 +95,9 @@ export const ThreeViewport = ({
   const [showGroundGrid, setShowGroundGrid] = useState(true);
   const [showDebugPanel, setShowDebugPanel] = useState(true);
   const [enableShadows, setEnableShadows] = useState(true);
+  
   const [selectedLevelId, setSelectedLevelId] = useState<string>('3d');
+  const [selectedGridName, setSelectedGridName] = useState<string>('none');
 
   // Ref to avoid stale closures in the single-instance animation loop
   const selectedLevelIdRef = useRef<string>('3d');
@@ -50,15 +105,45 @@ export const ThreeViewport = ({
     selectedLevelIdRef.current = selectedLevelId;
   }, [selectedLevelId]);
 
+  const selectedGridNameRef = useRef<string>('none');
+  useEffect(() => {
+    selectedGridNameRef.current = selectedGridName;
+  }, [selectedGridName]);
+
+  // Keep track of the last selected level/grid to only transition camera on actual changes
+  const prevSelectedLevelIdRef = useRef<string>('3d');
+  const prevSelectedGridNameRef = useRef<string>('none');
+
   // Sort levels by elevation
   const sortedLevels = modelData 
     ? [...modelData.levels].sort((a, b) => a.elevation - b.elevation) 
     : [];
 
-  // Reset fit-camera ref and selected level when modelData changes
+  // Sort grids alphanumerically by name
+  const sortedGrids = modelData && modelData.grids
+    ? [...modelData.grids].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
+    : [];
+
+  // Mutually exclusive selection handlers
+  const handleLevelChange = (levelId: string) => {
+    setSelectedLevelId(levelId);
+    if (levelId !== '3d') {
+      setSelectedGridName('none');
+    }
+  };
+
+  const handleGridChange = (gridName: string) => {
+    setSelectedGridName(gridName);
+    if (gridName !== 'none') {
+      setSelectedLevelId('3d');
+    }
+  };
+
+  // Reset fit-camera ref and selected level/grid when modelData changes
   useEffect(() => {
     hasFitCameraRef.current = false;
     setSelectedLevelId('3d');
+    setSelectedGridName('none');
   }, [modelData]);
 
   // Sync ground grid visibility directly using ref
@@ -75,14 +160,20 @@ export const ThreeViewport = ({
     }
   }, [enableShadows]);
 
-  // Handle 2D Plan View camera transition and rotation locking
+  // Handle 2D Plan View & 2D Grid Elevation View camera transition and rotation locking
   useEffect(() => {
     const controls = controlsRef.current;
     const persCamera = cameraRef.current;
     const orthoCamera = orthoCameraRef.current;
     if (!controls || !persCamera || !orthoCamera) return;
 
-    if (selectedLevelId === '3d') {
+    const hasLevelChanged = selectedLevelId !== prevSelectedLevelIdRef.current;
+    const hasGridChanged = selectedGridName !== prevSelectedGridNameRef.current;
+
+    prevSelectedLevelIdRef.current = selectedLevelId;
+    prevSelectedGridNameRef.current = selectedGridName;
+
+    if (selectedLevelId === '3d' && selectedGridName === 'none') {
       // Switch back to perspective camera
       activeCameraRef.current = persCamera;
       controls.object = persCamera;
@@ -97,7 +188,7 @@ export const ThreeViewport = ({
       
       persCamera.updateProjectionMatrix();
       controls.update();
-    } else if (modelData) {
+    } else if (selectedLevelId !== '3d' && modelData) {
       // Switch to Orthographic Camera for flat 2D layout without perspective depth
       activeCameraRef.current = orthoCamera;
       controls.object = orthoCamera;
@@ -110,26 +201,103 @@ export const ThreeViewport = ({
         RIGHT: THREE.MOUSE.PAN
       };
 
-      const currentLevel = modelData.levels.find(l => l.id === selectedLevelId);
-      const elevation = currentLevel ? currentLevel.elevation : 0;
+      if (hasLevelChanged) {
+        const currentLevel = modelData.levels.find(l => l.id === selectedLevelId);
+        const elevation = currentLevel ? currentLevel.elevation : 0;
 
-      // Keep current X and Z of the target to prevent jumping horizontally
-      const target = controls.target.clone();
-      target.y = elevation;
+        // Keep current X and Z of the target to prevent jumping horizontally
+        const target = controls.target.clone();
+        target.y = elevation;
 
-      // Update controls target immediately so camera looks at the correct height
-      controls.target.copy(target);
+        // Update controls target immediately so camera looks at the correct height
+        controls.target.copy(target);
 
-      // Reset and position Orthographic Camera directly above the level floor plane
-      orthoCamera.zoom = 1;
-      orthoCamera.position.set(target.x, elevation + 100, target.z + 0.001);
-      orthoCamera.lookAt(target);
-      orthoCamera.updateProjectionMatrix();
+        // Reset and position Orthographic Camera directly above the level floor plane
+        orthoCamera.zoom = 1;
+        orthoCamera.position.set(target.x, elevation + 100, target.z + 0.001);
+        orthoCamera.lookAt(target);
+        orthoCamera.updateProjectionMatrix();
+      }
 
       targetCameraPosition.current = null; // direct assignment, no perspective lerping across cameras
       controls.update();
+    } else if (selectedGridName !== 'none' && modelData && modelData.grids) {
+      const grid = modelData.grids.find(g => g.name === selectedGridName);
+      if (grid) {
+        // Switch to Orthographic Camera for flat 2D layout without perspective depth
+        activeCameraRef.current = orthoCamera;
+        controls.object = orthoCamera;
+
+        // Disable rotation for 2D elevation view
+        controls.enableRotate = false;
+        controls.mouseButtons = {
+          LEFT: THREE.MOUSE.PAN,
+          MIDDLE: THREE.MOUSE.DOLLY,
+          RIGHT: THREE.MOUSE.PAN
+        };
+
+        if (hasGridChanged) {
+          const tx = activeStep === 'process' ? processTranslation.dx : 0;
+          const ty = activeStep === 'process' ? processTranslation.dy : 0;
+          const tz = activeStep === 'process' ? processTranslation.dz : 0;
+          const rotAlpha = activeStep === 'process' ? (processTranslation.alpha * Math.PI) / 180 : 0;
+
+          const convertCoords = (x: number, y: number, z: number): THREE.Vector3 => {
+            let rx = x;
+            let ry = y;
+            if (rotAlpha !== 0) {
+              rx = x * Math.cos(rotAlpha) - y * Math.sin(rotAlpha);
+              ry = x * Math.sin(rotAlpha) + y * Math.cos(rotAlpha);
+            }
+            return new THREE.Vector3(rx + tx, z + tz, -ry - ty);
+          };
+
+          const elevations = modelData.levels.map(l => l.elevation);
+          const minElevation = Math.min(...elevations, 0);
+          const maxElevation = Math.max(...elevations, 10);
+          const height = maxElevation - minElevation;
+          const midElevation = (minElevation + maxElevation) / 2;
+
+          const p1 = convertCoords(grid.p1[0], grid.p1[1], midElevation);
+          const p2 = convertCoords(grid.p2[0], grid.p2[1], midElevation);
+
+          const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+          const length = p1.distanceTo(p2);
+
+          // Direction of grid
+          const dir = new THREE.Vector3().subVectors(p2, p1);
+          dir.y = 0;
+          dir.normalize();
+
+          // Normal of grid (perpendicular in XZ plane)
+          const normal = new THREE.Vector3(-dir.z, 0, dir.x);
+
+          // Position camera perpendicular to grid at mid-elevation
+          const distance = Math.max(length, height) * 2;
+          const cameraPos = new THREE.Vector3().copy(mid).addScaledVector(normal, distance);
+
+          controls.target.copy(mid);
+
+          // Configure Orthographic Camera boundaries dynamically
+          if (mountRef.current) {
+            const aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
+            const dynamicFrustumSize = Math.max(length, height) * 1.25;
+            orthoCamera.left = (-dynamicFrustumSize * aspect) / 2;
+            orthoCamera.right = (dynamicFrustumSize * aspect) / 2;
+            orthoCamera.top = dynamicFrustumSize / 2;
+            orthoCamera.bottom = -dynamicFrustumSize / 2;
+          }
+          orthoCamera.zoom = 1;
+          orthoCamera.position.copy(cameraPos);
+          orthoCamera.lookAt(mid);
+          orthoCamera.updateProjectionMatrix();
+        }
+
+        targetCameraPosition.current = null;
+        controls.update();
+      }
     }
-  }, [selectedLevelId, modelData]);
+  }, [selectedLevelId, selectedGridName, modelData, activeStep, processTranslation?.dx, processTranslation?.dy, processTranslation?.dz, processTranslation?.alpha]);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -399,6 +567,11 @@ export const ThreeViewport = ({
           return new THREE.Vector3(rx + tx, z + tz, -ry - ty);
         };
 
+        // Find the selected grid
+        const selectedGrid = selectedGridName !== 'none' && modelData.grids
+          ? modelData.grids.find(g => g.name === selectedGridName)
+          : null;
+
         // Get active level elevation for grid drawing
         let activeLevelElevation = 0;
         if (selectedLevelId !== '3d' && modelData.levels) {
@@ -445,6 +618,41 @@ export const ThreeViewport = ({
                 if (wall.level !== selectedLevelId) return;
               } else {
                 if (!checkedLevels.has(wall.level)) return;
+              }
+
+              // Filter by Elevation Grid
+              if (selectedGrid) {
+                const outline = wall.location.outline;
+                if (outline && outline.length >= 2) {
+                  // Find the two furthest points in original coordinates to check alignment
+                  let maxDist = -1;
+                  let pStartOrig = outline[0];
+                  let pEndOrig = outline[1] || outline[0];
+                  
+                  for (let i = 0; i < outline.length; i++) {
+                    for (let j = i + 1; j < outline.length; j++) {
+                      const dx = outline[i][0] - outline[j][0];
+                      const dy = outline[i][1] - outline[j][1];
+                      const dist = Math.sqrt(dx * dx + dy * dy);
+                      if (dist > maxDist) {
+                        maxDist = dist;
+                        pStartOrig = outline[i];
+                        pEndOrig = outline[j];
+                      }
+                    }
+                  }
+                  
+                  const d1 = getDistanceToGridLine(pStartOrig[0], pStartOrig[1], selectedGrid);
+                  const d2 = getDistanceToGridLine(pEndOrig[0], pEndOrig[1], selectedGrid);
+                  if (d1 > 0.5 || d2 > 0.5) return; // 0.5m tolerance
+                  
+                  // Overlap check
+                  const tStart = getGridProjectionT(pStartOrig[0], pStartOrig[1], selectedGrid);
+                  const tEnd = getGridProjectionT(pEndOrig[0], pEndOrig[1], selectedGrid);
+                  if (!intervalsOverlap(Math.min(tStart, tEnd), Math.max(tStart, tEnd), -0.05, 1.05)) return;
+                } else {
+                  return;
+                }
               }
 
               // Filter by Section checked state
@@ -544,6 +752,25 @@ export const ThreeViewport = ({
               } else {
                 if (!checkedLevels.has(beam.level)) return;
               }
+
+              // Filter by Elevation Grid
+              if (selectedGrid) {
+                const start = beam.location.start;
+                const end = beam.location.end;
+                if (start && end) {
+                  const d1 = getDistanceToGridLine(start[0], start[1], selectedGrid);
+                  const d2 = getDistanceToGridLine(end[0], end[1], selectedGrid);
+                  if (d1 > 0.5 || d2 > 0.5) return; // 0.5m tolerance
+                  
+                  // Overlap check
+                  const tStart = getGridProjectionT(start[0], start[1], selectedGrid);
+                  const tEnd = getGridProjectionT(end[0], end[1], selectedGrid);
+                  if (!intervalsOverlap(Math.min(tStart, tEnd), Math.max(tStart, tEnd), -0.05, 1.05)) return;
+                } else {
+                  return;
+                }
+              }
+
               if (!checkedBeamsSecs.has(beam.section)) return;
 
               // Filter by Thickness width
@@ -605,6 +832,34 @@ export const ThreeViewport = ({
               } else {
                 if (!checkedLevels.has(slab.level)) return;
               }
+
+              // Filter by Elevation Grid
+              if (selectedGrid) {
+                const outline = slab.location.outline;
+                if (outline && outline.length >= 3) {
+                  let intersects = false;
+                  // Check if either grid endpoint is inside the slab
+                  if (isPointInPolygon(selectedGrid.p1, outline) || isPointInPolygon(selectedGrid.p2, outline)) {
+                    intersects = true;
+                  }
+                  // Check if grid segment intersects any slab outer edge
+                  if (!intersects) {
+                    for (let i = 0; i < outline.length; i++) {
+                      const nextIdx = (i + 1) % outline.length;
+                      const edgeP1: [number, number] = [outline[i][0], outline[i][1]];
+                      const edgeP2: [number, number] = [outline[nextIdx][0], outline[nextIdx][1]];
+                      if (lineSegmentsIntersect(selectedGrid.p1, selectedGrid.p2, edgeP1, edgeP2)) {
+                        intersects = true;
+                        break;
+                      }
+                    }
+                  }
+                  if (!intersects) return;
+                } else {
+                  return;
+                }
+              }
+
               if (!checkedSlabsSecs.has(slab.section)) return;
 
               const slabSec = modelData.sections.find(s => s.code_name === slab.section);
@@ -682,6 +937,59 @@ export const ThreeViewport = ({
             }
           });
         }
+
+        // 5. Draw Level Lines in Elevation View
+        if (selectedGrid && modelData.levels) {
+          try {
+            // Horizontal dashed lines for each level along the grid line segment
+            const lineMaterial = new THREE.LineDashedMaterial({
+              color: 0x475569, // Slate grey
+              dashSize: 0.8,
+              gapSize: 0.4,
+              linewidth: 1
+            });
+
+            const p1_mid = convertCoords(selectedGrid.p1[0], selectedGrid.p1[1], 0);
+            const p2_mid = convertCoords(selectedGrid.p2[0], selectedGrid.p2[1], 0);
+            const dir = new THREE.Vector3().subVectors(p2_mid, p1_mid);
+            dir.y = 0;
+            dir.normalize();
+            const normal = new THREE.Vector3(-dir.z, 0, dir.x);
+
+            modelData.levels.forEach((lvl) => {
+              const p1 = convertCoords(selectedGrid.p1[0], selectedGrid.p1[1], lvl.elevation);
+              const p2 = convertCoords(selectedGrid.p2[0], selectedGrid.p2[1], lvl.elevation);
+              
+              const points = [p1, p2];
+              const geometry = new THREE.BufferGeometry().setFromPoints(points);
+              const line = new THREE.Line(geometry, lineMaterial);
+              line.computeLineDistances();
+              
+              line.name = 'bim_model_element';
+              modelGroup.add(line);
+
+              // Circular bubble at start of the line (p1)
+              const circleGeo1 = new THREE.CircleGeometry(0.15, 16);
+              const circleMat1 = new THREE.MeshBasicMaterial({ color: 0x475569, side: THREE.DoubleSide });
+              const circleMesh1 = new THREE.Mesh(circleGeo1, circleMat1);
+              circleMesh1.position.copy(p1);
+              circleMesh1.lookAt(new THREE.Vector3().addVectors(p1, normal));
+              circleMesh1.name = 'bim_model_element';
+              modelGroup.add(circleMesh1);
+
+              // Circular bubble at end of the line (p2)
+              const circleGeo2 = new THREE.CircleGeometry(0.15, 16);
+              const circleMat2 = new THREE.MeshBasicMaterial({ color: 0x475569, side: THREE.DoubleSide });
+              const circleMesh2 = new THREE.Mesh(circleGeo2, circleMat2);
+              circleMesh2.position.copy(p2);
+              circleMesh2.lookAt(new THREE.Vector3().addVectors(p2, normal));
+              circleMesh2.name = 'bim_model_element';
+              modelGroup.add(circleMesh2);
+            });
+          } catch (e) {
+            console.error('Error drawing level lines in elevation:', e);
+          }
+        }
       }
 
       // Auto-fit camera around model boundaries on first load
@@ -728,7 +1036,7 @@ export const ThreeViewport = ({
       console.error('Geometry update error:', err);
       setErrorLog(err.message || String(err));
     }
-  }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation, selectedLevelId]);
+  }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation?.dx, processTranslation?.dy, processTranslation?.dz, processTranslation?.alpha, selectedLevelId, selectedGridName]);
 
   const handleGoUp = () => {
     if (!sortedLevels.length) return;
@@ -757,9 +1065,38 @@ export const ThreeViewport = ({
   const isUpDisabled = sortedLevels.length > 0 && selectedLevelId === sortedLevels[sortedLevels.length - 1].id;
   const isDownDisabled = sortedLevels.length > 0 && selectedLevelId === sortedLevels[0].id;
 
+  // Grid navigation handlers
+  const handleGridGoUp = () => {
+    if (!sortedGrids.length) return;
+    if (selectedGridName === 'none') {
+      handleGridChange(sortedGrids[0].name);
+    } else {
+      const idx = sortedGrids.findIndex((g) => g.name === selectedGridName);
+      if (idx < sortedGrids.length - 1) {
+        handleGridChange(sortedGrids[idx + 1].name);
+      }
+    }
+  };
+
+  const handleGridGoDown = () => {
+    if (!sortedGrids.length) return;
+    if (selectedGridName === 'none') {
+      handleGridChange(sortedGrids[sortedGrids.length - 1].name);
+    } else {
+      const idx = sortedGrids.findIndex((g) => g.name === selectedGridName);
+      if (idx > 0) {
+        handleGridChange(sortedGrids[idx - 1].name);
+      }
+    }
+  };
+
+  const isGridUpDisabled = sortedGrids.length > 0 && selectedGridName === sortedGrids[sortedGrids.length - 1].name;
+  const isGridDownDisabled = sortedGrids.length > 0 && selectedGridName === sortedGrids[0].name;
+
   const handleFaceClick = (face: string) => {
     // Switch to Vista 3D first when clicking ViewCube to restore 3D rotation and elements
     setSelectedLevelId('3d');
+    setSelectedGridName('none');
 
     const camera = cameraRef.current;
     const controls = controlsRef.current;
@@ -868,6 +1205,23 @@ export const ThreeViewport = ({
           pointer-events: auto;
           font-family: 'Manrope', sans-serif;
         }
+        .elevation-view-container {
+          position: absolute;
+          top: 216px; /* Positioned below the Plan View card */
+          right: 16px;
+          width: 120px;
+          z-index: 100;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          background: rgba(250, 248, 255, 0.85);
+          border: 1.5px solid rgba(0, 74, 198, 0.4);
+          border-radius: 8px;
+          padding: 8px;
+          box-shadow: 0 4px 12px rgba(25, 27, 35, 0.08);
+          pointer-events: auto;
+          font-family: 'Manrope', sans-serif;
+        }
         .plan-view-title {
           font-size: 8px;
           font-weight: 800;
@@ -935,8 +1289,8 @@ export const ThreeViewport = ({
 
         .options-column {
           position: absolute;
-          top: 228px; /* Shifted down to accommodate the plan view card and avoid overlapping cube */
-          right: 58px; /* Centered relative to the plan view card */
+          top: 320px; /* Shifted down to accommodate both Planta and Elevacion view cards */
+          right: 58px; /* Centered relative to the view cards */
           z-index: 100;
           display: flex;
           flex-direction: column;
@@ -993,7 +1347,7 @@ export const ThreeViewport = ({
           <div className="plan-view-title">Planta</div>
           <select 
             value={selectedLevelId} 
-            onChange={(e) => setSelectedLevelId(e.target.value)}
+            onChange={(e) => handleLevelChange(e.target.value)}
             className="plan-view-select"
           >
             <option value="3d">Vista 3D</option>
@@ -1019,6 +1373,47 @@ export const ThreeViewport = ({
               disabled={isUpDisabled}
               className="arrow-btn"
               title="Subir nivel"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Vistas en Elevación Card */}
+      {modelData && sortedGrids.length > 0 && (
+        <div className="elevation-view-container">
+          <div className="plan-view-title">Elevación</div>
+          <select 
+            value={selectedGridName} 
+            onChange={(e) => handleGridChange(e.target.value)}
+            className="plan-view-select"
+          >
+            <option value="none">Vista 3D</option>
+            {sortedGrids.map((grid) => (
+              <option key={grid.name} value={grid.name}>
+                {grid.name}
+              </option>
+            ))}
+          </select>
+          <div className="plan-view-arrows">
+            <button 
+              onClick={handleGridGoDown}
+              disabled={isGridDownDisabled}
+              className="arrow-btn"
+              title="Bajar grilla"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+              </svg>
+            </button>
+            <button 
+              onClick={handleGridGoUp}
+              disabled={isGridUpDisabled}
+              className="arrow-btn"
+              title="Subir grilla"
             >
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
@@ -1082,7 +1477,7 @@ export const ThreeViewport = ({
           )}
           {errorLog && (
             <div className="mt-1 border-t border-red-500/50 pt-1 text-red-400 font-semibold max-h-24 overflow-y-auto">
-              Error: {errorLog}
+               Error: {errorLog}
             </div>
           )}
         </div>
