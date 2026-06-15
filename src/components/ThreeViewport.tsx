@@ -23,6 +23,8 @@ export const ThreeViewport = ({
   const sceneRef = useRef<THREE.Scene | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const orthoCameraRef = useRef<THREE.OrthographicCamera | null>(null);
+  const activeCameraRef = useRef<THREE.Camera | null>(null);
   const hasFitCameraRef = useRef<boolean>(false);
   const targetCameraPosition = useRef<THREE.Vector3 | null>(null);
 
@@ -41,6 +43,12 @@ export const ThreeViewport = ({
   const [showDebugPanel, setShowDebugPanel] = useState(true);
   const [enableShadows, setEnableShadows] = useState(true);
   const [selectedLevelId, setSelectedLevelId] = useState<string>('3d');
+
+  // Ref to avoid stale closures in the single-instance animation loop
+  const selectedLevelIdRef = useRef<string>('3d');
+  useEffect(() => {
+    selectedLevelIdRef.current = selectedLevelId;
+  }, [selectedLevelId]);
 
   // Sort levels by elevation
   const sortedLevels = modelData 
@@ -70,10 +78,15 @@ export const ThreeViewport = ({
   // Handle 2D Plan View camera transition and rotation locking
   useEffect(() => {
     const controls = controlsRef.current;
-    const camera = cameraRef.current;
-    if (!controls || !camera) return;
+    const persCamera = cameraRef.current;
+    const orthoCamera = orthoCameraRef.current;
+    if (!controls || !persCamera || !orthoCamera) return;
 
     if (selectedLevelId === '3d') {
+      // Switch back to perspective camera
+      activeCameraRef.current = persCamera;
+      controls.object = persCamera;
+
       // Re-enable rotation
       controls.enableRotate = true;
       controls.mouseButtons = {
@@ -81,7 +94,14 @@ export const ThreeViewport = ({
         MIDDLE: THREE.MOUSE.DOLLY,
         RIGHT: THREE.MOUSE.PAN
       };
+      
+      persCamera.updateProjectionMatrix();
+      controls.update();
     } else if (modelData) {
+      // Switch to Orthographic Camera for flat 2D layout without perspective depth
+      activeCameraRef.current = orthoCamera;
+      controls.object = orthoCamera;
+
       // Disable rotation for 2D plan view
       controls.enableRotate = false;
       controls.mouseButtons = {
@@ -97,15 +117,17 @@ export const ThreeViewport = ({
       const target = controls.target.clone();
       target.y = elevation;
 
-      // Calculate a reasonable camera height (distance to level floor plane)
-      const radius = Math.max(camera.position.distanceTo(controls.target), 30);
-
       // Update controls target immediately so camera looks at the correct height
       controls.target.copy(target);
 
-      // Smoothly move camera directly above, slightly offset on Z to prevent OrbitControls gimbal lock
-      const targetPos = new THREE.Vector3(target.x, elevation + radius, target.z + 0.001);
-      targetCameraPosition.current = targetPos;
+      // Reset and position Orthographic Camera directly above the level floor plane
+      orthoCamera.zoom = 1;
+      orthoCamera.position.set(target.x, elevation + 100, target.z + 0.001);
+      orthoCamera.lookAt(target);
+      orthoCamera.updateProjectionMatrix();
+
+      targetCameraPosition.current = null; // direct assignment, no perspective lerping across cameras
+      controls.update();
     }
   }, [selectedLevelId, modelData]);
 
@@ -123,14 +145,34 @@ export const ThreeViewport = ({
       scene.background = new THREE.Color(0xd9d9e5); // surface_dim (#d9d9e5) from Stitch theme
       sceneRef.current = scene;
 
-      // 2. Create Camera
+      // 2. Create Cameras
       const width = mountRef.current.clientWidth || 800;
       const height = mountRef.current.clientHeight || 500;
-      const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 5000);
+      const aspect = width / height;
+
+      // Perspective Camera
+      const camera = new THREE.PerspectiveCamera(45, aspect, 0.1, 5000);
       camera.position.set(40, 30, 40);
       cameraRef.current = camera;
 
-        // 3. Create Renderer
+      // Orthographic Camera
+      const frustumSize = 40;
+      const orthoCamera = new THREE.OrthographicCamera(
+        (-frustumSize * aspect) / 2,
+        (frustumSize * aspect) / 2,
+        frustumSize / 2,
+        -frustumSize / 2,
+        0.1,
+        1000
+      );
+      orthoCamera.position.set(0, 50, 0.001);
+      orthoCameraRef.current = orthoCamera;
+
+      // Active Camera starts as Perspective
+      const activeCamera = camera;
+      activeCameraRef.current = activeCamera;
+
+      // 3. Create Renderer
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setSize(width, height);
       renderer.setPixelRatio(window.devicePixelRatio);
@@ -150,7 +192,7 @@ export const ThreeViewport = ({
       rendererRef.current = renderer;
 
       // 4. Create Controls
-      controls = new OrbitControls(camera, renderer.domElement);
+      controls = new OrbitControls(activeCamera, renderer.domElement);
       controls.enableDamping = false; // Disable damping/inertia as requested by the user
       controls.maxPolarAngle = Math.PI / 2 + 0.1; // don't go too far below ground
       controlsRef.current = controls;
@@ -207,33 +249,39 @@ export const ThreeViewport = ({
       const animate = () => {
         animationId = requestAnimationFrame(animate);
 
-        if (camera && controls && renderer) {
+        const activeCamera = activeCameraRef.current;
+        const controls = controlsRef.current;
+        const renderer = rendererRef.current;
+
+        if (activeCamera && controls && renderer) {
           // Camera position smooth interpolation for navigation cube face clicks
           if (targetCameraPosition.current) {
-            camera.position.lerp(targetCameraPosition.current, 0.15);
+            activeCamera.position.lerp(targetCameraPosition.current, 0.15);
             // Increased threshold to 0.05 to avoid floating-point lock-ups
-            if (camera.position.distanceTo(targetCameraPosition.current) < 0.05) {
-              camera.position.copy(targetCameraPosition.current);
+            if (activeCamera.position.distanceTo(targetCameraPosition.current) < 0.05) {
+              activeCamera.position.copy(targetCameraPosition.current);
               targetCameraPosition.current = null;
             }
             controls.update();
           }
 
-          // Calculate spherical pitch & yaw to rotate CSS viewcube in sync
-          const offset = new THREE.Vector3().copy(camera.position).sub(controls.target);
-          const len = offset.length();
-          if (len > 0) {
-            const theta = Math.atan2(offset.x, offset.z); // yaw
-            const phi = Math.acos(Math.min(Math.max(offset.y / len, -1), 1)); // pitch
-            
-            // Correct pitchDeg direction to match CSS 3D coordinate system (fixes top/bottom viewport rotation)
-            const pitchDeg = (phi * 180) / Math.PI - 90;
-            const yawDeg = -(theta * 180) / Math.PI;
-            setCubeTransform(`rotateX(${pitchDeg}deg) rotateY(${yawDeg}deg)`);
+          // Calculate spherical pitch & yaw to rotate CSS viewcube in sync (only in 3D perspective mode)
+          if (selectedLevelIdRef.current === '3d' && activeCamera instanceof THREE.PerspectiveCamera) {
+            const offset = new THREE.Vector3().copy(activeCamera.position).sub(controls.target);
+            const len = offset.length();
+            if (len > 0) {
+              const theta = Math.atan2(offset.x, offset.z); // yaw
+              const phi = Math.acos(Math.min(Math.max(offset.y / len, -1), 1)); // pitch
+              
+              // Correct pitchDeg direction to match CSS 3D coordinate system (fixes top/bottom viewport rotation)
+              const pitchDeg = (phi * 180) / Math.PI - 90;
+              const yawDeg = -(theta * 180) / Math.PI;
+              setCubeTransform(`rotateX(${pitchDeg}deg) rotateY(${yawDeg}deg)`);
+            }
           }
 
           controls.update();
-          renderer.render(scene, camera);
+          renderer.render(scene, activeCamera);
         }
       };
       animate();
@@ -245,9 +293,17 @@ export const ThreeViewport = ({
           const h = entry.contentRect.height;
           setViewportSize({ width: Math.round(w), height: Math.round(h) });
           if (w > 0 && h > 0) {
+            const currentAspect = w / h;
             if (cameraRef.current) {
-              cameraRef.current.aspect = w / h;
+              cameraRef.current.aspect = currentAspect;
               cameraRef.current.updateProjectionMatrix();
+            }
+            if (orthoCameraRef.current) {
+              const ortho = orthoCameraRef.current;
+              const currentHeight = ortho.top - ortho.bottom;
+              ortho.left = (-currentHeight * currentAspect) / 2;
+              ortho.right = (currentHeight * currentAspect) / 2;
+              ortho.updateProjectionMatrix();
             }
             if (rendererRef.current) {
               rendererRef.current.setSize(w, h);
@@ -404,39 +460,66 @@ export const ThreeViewport = ({
               }
 
               const outline = wall.location.outline;
-              if (outline && outline.length >= 4) {
-                // Typically vertical quadrilaterals: v0, v1, v2, v3
-                const p0 = convertCoords(outline[0][0], outline[0][1], outline[0][2]);
-                const p1 = convertCoords(outline[1][0], outline[1][1], outline[1][2]);
-                const p2 = convertCoords(outline[2][0], outline[2][1], outline[2][2]);
-                const p3 = convertCoords(outline[3][0], outline[3][1], outline[3][2]);
-
-                const vertices = new Float32Array([
-                  p0.x, p0.y, p0.z,
-                  p1.x, p1.y, p1.z,
-                  p2.x, p2.y, p2.z,
-                  p3.x, p3.y, p3.z,
-                ]);
-
-                const indices = [
-                  0, 1, 2,
-                  0, 2, 3
-                ];
-
-                const geometry = new THREE.BufferGeometry();
-                geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-                geometry.setIndex(indices);
-                geometry.computeVertexNormals();
-
+              if (outline && outline.length >= 2) {
+                // Convert all outline points to Three.js coordinates
+                const pts = outline.map((p) => convertCoords(p[0], p[1], p[2]));
+                
+                // Find the base elevation (minimum Y coordinate in Three.js)
+                let baseElevation = pts[0].y;
+                pts.forEach((p) => {
+                  if (p.y < baseElevation) baseElevation = p.y;
+                });
+                
+                // Find the two points that are furthest apart in the horizontal XZ plane
+                // to define the wall centerline start and end points.
+                let maxDist = -1;
+                let pStart = pts[0];
+                let pEnd = pts[1] || pts[0];
+                
+                for (let i = 0; i < pts.length; i++) {
+                  for (let j = i + 1; j < pts.length; j++) {
+                    const dx = pts[i].x - pts[j].x;
+                    const dz = pts[i].z - pts[j].z;
+                    const dist = Math.sqrt(dx * dx + dz * dz);
+                    if (dist > maxDist) {
+                      maxDist = dist;
+                      pStart = pts[i];
+                      pEnd = pts[j];
+                    }
+                  }
+                }
+                
+                // Ensure pStart and pEnd are at the base elevation
+                pStart = new THREE.Vector3(pStart.x, baseElevation, pStart.z);
+                pEnd = new THREE.Vector3(pEnd.x, baseElevation, pEnd.z);
+                
+                const length = pStart.distanceTo(pEnd);
+                const height = wall.location.height || 3.0;
+                
+                // Get thickness from section parameters (default to 0.2m = 20cm)
+                const wallSec = modelData.sections.find((s) => s.code_name === wall.section);
+                const thickness = wallSec ? (wallSec.parameters.thickness || 0.2) : 0.2;
+                
+                // Create a 3D box geometry for the wall
+                const geometry = new THREE.BoxGeometry(thickness, height, length);
+                
                 // Matte solid concrete grey for walls
                 const material = new THREE.MeshStandardMaterial({
                   color: 0x94a3b8, // Slate concrete grey
                   roughness: 0.8,
-                  metalness: 0.1,
-                  side: THREE.DoubleSide
+                  metalness: 0.1
                 });
-
+                
                 const mesh = new THREE.Mesh(geometry, material);
+                
+                // Position at the center of the wall segment
+                const center = new THREE.Vector3().copy(pStart).add(pEnd).multiplyScalar(0.5);
+                center.y += height / 2; // raise by half height
+                mesh.position.copy(center);
+                
+                // Rotate to align with the wall direction (looking towards pEnd)
+                mesh.lookAt(pEnd.x, center.y, pEnd.z);
+                
                 mesh.castShadow = true;
                 mesh.receiveShadow = true;
                 modelGroup.add(mesh);
@@ -609,6 +692,7 @@ export const ThreeViewport = ({
 
         const maxDim = Math.max(size.x, size.y, size.z);
         const camera = cameraRef.current;
+        const orthoCamera = orthoCameraRef.current;
         const controls = controlsRef.current;
 
         if (camera && controls && maxDim > 0) {
@@ -622,6 +706,18 @@ export const ThreeViewport = ({
 
           camera.position.set(center.x + cameraZ * 0.8, center.y + cameraZ * 0.6, center.z + cameraZ * 0.8);
           camera.lookAt(center);
+
+          // Configure Orthographic Camera boundaries dynamically based on bounding box size
+          if (orthoCamera && mountRef.current) {
+            const aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
+            const dynamicFrustumSize = maxDim * 1.5; // 50% buffer padding
+            orthoCamera.left = (-dynamicFrustumSize * aspect) / 2;
+            orthoCamera.right = (dynamicFrustumSize * aspect) / 2;
+            orthoCamera.top = dynamicFrustumSize / 2;
+            orthoCamera.bottom = -dynamicFrustumSize / 2;
+            orthoCamera.updateProjectionMatrix();
+          }
+
           controls.update();
           hasFitCameraRef.current = true;
         }
