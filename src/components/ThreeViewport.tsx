@@ -26,16 +26,39 @@ export const ThreeViewport = ({
   const hasFitCameraRef = useRef<boolean>(false);
   const targetCameraPosition = useRef<THREE.Vector3 | null>(null);
 
+  // Direct references to lights and grid helpers to guarantee toggling
+  const gridHelperRef = useRef<THREE.GridHelper | null>(null);
+  const dirLightRef = useRef<THREE.DirectionalLight | null>(null);
+
   const [sceneInstance, setSceneInstance] = useState<THREE.Scene | null>(null);
   const [cubeTransform, setCubeTransform] = useState('rotateX(0deg) rotateY(0deg)');
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [renderedCounts, setRenderedCounts] = useState({ walls: 0, beams: 0, slabs: 0 });
   const [errorLog, setErrorLog] = useState<string | null>(null);
 
+  // Viewport toggles state
+  const [showGroundGrid, setShowGroundGrid] = useState(true);
+  const [showDebugPanel, setShowDebugPanel] = useState(true);
+  const [enableShadows, setEnableShadows] = useState(true);
+
   // Reset fit-camera ref when modelData changes
   useEffect(() => {
     hasFitCameraRef.current = false;
   }, [modelData]);
+
+  // Sync ground grid visibility directly using ref
+  useEffect(() => {
+    if (gridHelperRef.current) {
+      gridHelperRef.current.visible = showGroundGrid;
+    }
+  }, [showGroundGrid]);
+
+  // Sync shadow casting directly using ref
+  useEffect(() => {
+    if (dirLightRef.current) {
+      dirLightRef.current.castShadow = enableShadows;
+    }
+  }, [enableShadows]);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -58,11 +81,12 @@ export const ThreeViewport = ({
       camera.position.set(40, 30, 40);
       cameraRef.current = camera;
 
-      // 3. Create Renderer
+        // 3. Create Renderer
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setSize(width, height);
       renderer.setPixelRatio(window.devicePixelRatio);
       renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Enable beautiful soft shadows
       
       // Ensure canvas element styles are set for absolute overlay and events
       renderer.domElement.style.position = 'absolute';
@@ -78,22 +102,42 @@ export const ThreeViewport = ({
 
       // 4. Create Controls
       controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.05;
+      controls.enableDamping = false; // Disable damping/inertia as requested by the user
       controls.maxPolarAngle = Math.PI / 2 + 0.1; // don't go too far below ground
       controlsRef.current = controls;
 
+      // Cancel camera transition on user interaction (resolves "elastic band" lock-up)
+      controls.addEventListener('start', () => {
+        targetCameraPosition.current = null;
+      });
+
       // 5. Add Lights
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.5); // Lower ambient light for better shadow depth
       scene.add(ambientLight);
 
-      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-      dirLight.position.set(40, 100, 20);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+      dirLight.name = 'main_directional_light';
+      dirLight.position.set(80, 120, 50); // Positioned high and to the side for shadows
       dirLight.castShadow = true;
+      
+      // High-resolution shadow mapping settings
+      dirLight.shadow.mapSize.width = 2048;
+      dirLight.shadow.mapSize.height = 2048;
+      dirLight.shadow.camera.near = 0.5;
+      dirLight.shadow.camera.far = 500;
+      
+      // Configure ortho camera boundaries to fit structural model bounds
+      const d = 80;
+      dirLight.shadow.camera.left = -d;
+      dirLight.shadow.camera.right = d;
+      dirLight.shadow.camera.top = d;
+      dirLight.shadow.camera.bottom = -d;
+      dirLight.shadow.bias = -0.0005; // Minimize shadow mapping acne
       scene.add(dirLight);
+      dirLightRef.current = dirLight; // Populate ref for shadows toggle
 
-      const dirLight2 = new THREE.DirectionalLight(0xb4c5ff, 0.4);
-      dirLight2.position.set(-40, 30, -20);
+      const dirLight2 = new THREE.DirectionalLight(0xb4c5ff, 0.3);
+      dirLight2.position.set(-80, 30, -50);
       scene.add(dirLight2);
 
       // 6. Draw structural axes helper at base
@@ -103,7 +147,9 @@ export const ThreeViewport = ({
       // 7. Grid ground helper
       const gridHelper = new THREE.GridHelper(100, 50, 0x004ac6, 0xc3c6d7);
       gridHelper.position.y = -0.01;
+      gridHelper.name = 'ground_grid_helper';
       scene.add(gridHelper);
+      gridHelperRef.current = gridHelper; // Populate ref for gridHelper toggle
 
       // Set scene instance to trigger geometry effect
       setSceneInstance(scene);
@@ -116,7 +162,8 @@ export const ThreeViewport = ({
           // Camera position smooth interpolation for navigation cube face clicks
           if (targetCameraPosition.current) {
             camera.position.lerp(targetCameraPosition.current, 0.15);
-            if (camera.position.distanceTo(targetCameraPosition.current) < 0.01) {
+            // Increased threshold to 0.05 to avoid floating-point lock-ups
+            if (camera.position.distanceTo(targetCameraPosition.current) < 0.05) {
               camera.position.copy(targetCameraPosition.current);
               targetCameraPosition.current = null;
             }
@@ -130,16 +177,10 @@ export const ThreeViewport = ({
             const theta = Math.atan2(offset.x, offset.z); // yaw
             const phi = Math.acos(Math.min(Math.max(offset.y / len, -1), 1)); // pitch
             
-            const pitchDeg = 90 - (phi * 180) / Math.PI;
+            // Correct pitchDeg direction to match CSS 3D coordinate system (fixes top/bottom viewport rotation)
+            const pitchDeg = (phi * 180) / Math.PI - 90;
             const yawDeg = -(theta * 180) / Math.PI;
             setCubeTransform(`rotateX(${pitchDeg}deg) rotateY(${yawDeg}deg)`);
-          }
-
-          // Rotate the test shape if present
-          const testMesh = scene.getObjectByName('test_mode_shape');
-          if (testMesh) {
-            testMesh.rotation.x += 0.01;
-            testMesh.rotation.y += 0.015;
           }
 
           controls.update();
@@ -178,6 +219,8 @@ export const ThreeViewport = ({
       if (controls) (controls as any).dispose();
       
       setSceneInstance(null);
+      gridHelperRef.current = null; // Clear refs on cleanup
+      dirLightRef.current = null;
       
       if (renderer && renderer.domElement && mountRef.current) {
         try {
@@ -227,19 +270,7 @@ export const ThreeViewport = ({
       modelGroup.name = 'bim_model_element';
       scene.add(modelGroup);
 
-      // Render simple test mode shape if active (for debugging view/interaction)
-      if (filters.testMode) {
-        try {
-          const testGeo = new THREE.TorusKnotGeometry(3, 0.8, 64, 8);
-          const testMat = new THREE.MeshNormalMaterial();
-          const testMesh = new THREE.Mesh(testGeo, testMat);
-          testMesh.name = 'test_mode_shape';
-          testMesh.position.set(0, 4, 0); // elevated above ground grid
-          modelGroup.add(testMesh);
-        } catch (e: any) {
-          console.error('Error drawing test shape:', e);
-        }
-      }
+
 
       if (modelData) {
         // Setup translation matrices for the "process" step if enabled
@@ -333,14 +364,12 @@ export const ThreeViewport = ({
                 geometry.setIndex(indices);
                 geometry.computeVertexNormals();
 
-                // Elegant semi-transparent blue for walls
+                // Matte solid concrete grey for walls
                 const material = new THREE.MeshStandardMaterial({
-                  color: activeStep === 'export' ? 0x2563eb : 0x004ac6,
-                  transparent: true,
-                  opacity: 0.65,
-                  side: THREE.DoubleSide,
-                  roughness: 0.4,
-                  metalness: 0.1
+                  color: 0x94a3b8, // Slate concrete grey
+                  roughness: 0.8,
+                  metalness: 0.1,
+                  side: THREE.DoubleSide
                 });
 
                 const mesh = new THREE.Mesh(geometry, material);
@@ -389,10 +418,11 @@ export const ThreeViewport = ({
                 // Draw a box geometry connecting them
                 const beamGeo = new THREE.BoxGeometry(thickness, height, distance);
                 
+                // Matte solid concrete grey for beams
                 const beamMat = new THREE.MeshStandardMaterial({
-                  color: activeStep === 'export' ? 0xacbfff : 0x495c95,
-                  roughness: 0.5,
-                  metalness: 0.2
+                  color: 0x64748b, // Darker concrete grey
+                  roughness: 0.8,
+                  metalness: 0.1
                 });
 
                 const beamMesh = new THREE.Mesh(beamGeo, beamMat);
@@ -435,21 +465,22 @@ export const ThreeViewport = ({
                 // Flatten vertices to 2D shape on XY coordinates (using Three.js coordinate mapping)
                 const shape = new THREE.Shape();
                 const p0 = outline[0];
-                shape.moveTo(p0[0], p0[1]);
+                // Invert Y coordinate to align with Three.js Z-axis correctly
+                shape.moveTo(p0[0], -p0[1]);
 
                 for (let i = 1; i < outline.length; i++) {
-                  shape.lineTo(outline[i][0], outline[i][1]);
+                  shape.lineTo(outline[i][0], -outline[i][1]);
                 }
                 shape.closePath();
 
-                // Add openings
+                // Add openings with inverted Y coordinates
                 if (slab.location.openings) {
                   slab.location.openings.forEach((op) => {
                     if (op.outline && op.outline.length >= 3) {
                       const holePath = new THREE.Path();
-                      holePath.moveTo(op.outline[0][0], op.outline[0][1]);
+                      holePath.moveTo(op.outline[0][0], -op.outline[0][1]);
                       for (let i = 1; i < op.outline.length; i++) {
-                        holePath.lineTo(op.outline[i][0], op.outline[i][1]);
+                        holePath.lineTo(op.outline[i][0], -op.outline[i][1]);
                       }
                       holePath.closePath();
                       shape.holes.push(holePath);
@@ -468,12 +499,12 @@ export const ThreeViewport = ({
                 // Rotate shape geometry so XY horizontal plane matches Three.js XZ plane
                 geometry.rotateX(-Math.PI / 2);
 
+                // Matte solid concrete grey for slabs
                 const material = new THREE.MeshStandardMaterial({
-                  color: activeStep === 'export' ? 0xeeefff : 0xacbfff,
-                  transparent: true,
-                  opacity: 0.45,
-                  side: THREE.DoubleSide,
-                  roughness: 0.6
+                  color: 0xcbd5e1, // Lighter concrete grey
+                  roughness: 0.9,
+                  metalness: 0.1,
+                  side: THREE.DoubleSide
                 });
 
                 const mesh = new THREE.Mesh(geometry, material);
@@ -484,8 +515,9 @@ export const ThreeViewport = ({
                 
                 // Apply rotation to slab mesh if process rotation is set
                 if (rotAlpha !== 0) {
-                  mesh.rotation.y = rotAlpha;
+                  mesh.rotation.y = -rotAlpha;
                 }
+                mesh.castShadow = true; // Enable shadow casting for slabs
                 mesh.receiveShadow = true;
                 modelGroup.add(mesh);
                 slabsCount++;
@@ -569,7 +601,7 @@ export const ThreeViewport = ({
   return (
     <div ref={mountRef} className="absolute inset-0 w-full h-full rounded-xl overflow-hidden">
       
-      {/* Styles for Navigation Cube */}
+      {/* Styles for Navigation Cube & Options Column */}
       <style dangerouslySetInnerHTML={{__html: `
         .cube-wrapper {
           position: absolute;
@@ -620,6 +652,45 @@ export const ThreeViewport = ({
         .cube-face.left   { transform: rotateY(-90deg) translateZ(30px); }
         .cube-face.top    { transform: rotateX(90deg) translateZ(30px); }
         .cube-face.bottom { transform: rotateX(-90deg) translateZ(30px); }
+
+        .options-column {
+          position: absolute;
+          top: 112px; /* Increased to avoid 3D diagonal corner overlap on rotation */
+          right: 28px; /* Centered below the cube */
+          z-index: 100;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          pointer-events: auto;
+        }
+        .option-btn {
+          width: 36px;
+          height: 36px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(250, 248, 255, 0.85);
+          border: 1.5px solid rgba(0, 74, 198, 0.4);
+          border-radius: 6px;
+          color: #004ac6;
+          cursor: pointer;
+          box-shadow: 0 4px 12px rgba(25, 27, 35, 0.08);
+          transition: background-color 0.2s, color 0.2s, border-color 0.2s, transform 0.15s;
+        }
+        .option-btn:hover {
+          background: #004ac6;
+          color: #ffffff;
+          border-color: #004ac6;
+          transform: scale(1.05);
+        }
+        .option-btn:active {
+          transform: scale(0.95);
+        }
+        .option-btn.active {
+          background: #004ac6;
+          color: #ffffff;
+          border-color: #004ac6;
+        }
       `}} />
 
       {/* Interactive Navigation Cube */}
@@ -636,27 +707,65 @@ export const ThreeViewport = ({
         </div>
       </div>
 
-      {/* Floating Debug Panel */}
-      <div className="absolute bottom-4 left-4 bg-black/85 text-white font-mono text-[10px] p-3 rounded-lg border border-white/20 z-50 pointer-events-none max-w-xs select-none shadow-xl">
-        <h4 className="font-bold border-b border-white/20 pb-1 mb-1 text-primary-fixed">Three.js Viewport Debug</h4>
-        <div>Size: {viewportSize.width}x{viewportSize.height}</div>
-        <div>Model Loaded: {modelData ? 'Yes' : 'No'}</div>
-        <div>Test Mode Active: {filters.testMode ? 'Yes' : 'No'}</div>
-        {modelData && (
-          <>
-            <div>Total Walls: {modelData.elements.walls?.length || 0} (Rendered: {renderedCounts.walls})</div>
-            <div>Total Beams: {modelData.elements.beams?.length || 0} (Rendered: {renderedCounts.beams})</div>
-            <div>Total Slabs: {modelData.elements.slabs?.length || 0} (Rendered: {renderedCounts.slabs})</div>
-            <div>Grids: {modelData.grids?.length || 0} (Visible: {showGrids && filters.elements.grillas ? 'Yes' : 'No'})</div>
-            <div>Checked Levels: {filters.levels.filter(l => l.checked).length} / {filters.levels.length}</div>
-          </>
-        )}
-        {errorLog && (
-          <div className="mt-1 border-t border-red-500/50 pt-1 text-red-400 font-semibold max-h-24 overflow-y-auto">
-            Error: {errorLog}
-          </div>
-        )}
+      {/* Modeling Options Column */}
+      <div className="options-column">
+        {/* Toggle GridHelper */}
+        <button 
+          onClick={() => setShowGroundGrid(prev => !prev)}
+          className={`option-btn ${showGroundGrid ? 'active' : ''}`}
+          title={showGroundGrid ? "Ocultar cuadrícula" : "Mostrar cuadrícula"}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9h16.5m-16.5 6h16.5M9 3.75v16.5m6-16.5v16.5" />
+          </svg>
+        </button>
+
+        {/* Toggle Shadows */}
+        <button 
+          onClick={() => setEnableShadows(prev => !prev)}
+          className={`option-btn ${enableShadows ? 'active' : ''}`}
+          title={enableShadows ? "Desactivar sombras" : "Activar sombras"}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" className="w-5 h-5">
+            <path d="M12 2A10 10 0 0 0 2 12a10 10 0 0 0 10 10V2z" />
+            <path fill="none" stroke="currentColor" strokeWidth="2" d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20z" />
+          </svg>
+        </button>
+
+        {/* Toggle Debug Panel */}
+        <button 
+          onClick={() => setShowDebugPanel(prev => !prev)}
+          className={`option-btn ${showDebugPanel ? 'active' : ''}`}
+          title={showDebugPanel ? "Ocultar panel de depuración" : "Mostrar panel de depuración"}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M14.25 9.75L16.5 12l-2.25 2.25m-4.5 0L7.5 12l2.25-2.25M6 20.25h12A2.25 2.25 0 0020.25 18V6A2.25 2.25 0 0018 3.75H6A2.25 2.25 0 003.75 6v12A2.25 2.25 0 006 20.25z" />
+          </svg>
+        </button>
       </div>
+
+      {/* Floating Debug Panel */}
+      {showDebugPanel && (
+        <div className="absolute bottom-4 left-4 bg-black/85 text-white font-mono text-[10px] p-3 rounded-lg border border-white/20 z-50 pointer-events-none max-w-xs select-none shadow-xl">
+          <h4 className="font-bold border-b border-white/20 pb-1 mb-1 text-primary-fixed">Three.js Viewport Debug</h4>
+          <div>Size: {viewportSize.width}x{viewportSize.height}</div>
+          <div>Model Loaded: {modelData ? 'Yes' : 'No'}</div>
+          {modelData && (
+            <>
+              <div>Total Walls: {modelData.elements.walls?.length || 0} (Rendered: {renderedCounts.walls})</div>
+              <div>Total Beams: {modelData.elements.beams?.length || 0} (Rendered: {renderedCounts.beams})</div>
+              <div>Total Slabs: {modelData.elements.slabs?.length || 0} (Rendered: {renderedCounts.slabs})</div>
+              <div>Grids: {modelData.grids?.length || 0} (Visible: {showGrids && filters.elements.grillas ? 'Yes' : 'No'})</div>
+              <div>Checked Levels: {filters.levels.filter(l => l.checked).length} / {filters.levels.length}</div>
+            </>
+          )}
+          {errorLog && (
+            <div className="mt-1 border-t border-red-500/50 pt-1 text-red-400 font-semibold max-h-24 overflow-y-auto">
+              Error: {errorLog}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

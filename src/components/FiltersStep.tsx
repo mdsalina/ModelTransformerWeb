@@ -83,23 +83,6 @@ export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thick
           </header>
 
           <div className="flex flex-col gap-8">
-            {/* Modo Prueba (Debug) */}
-            <div className="p-4 bg-primary/5 border border-primary/20 rounded-xl flex items-center justify-between shadow-sm">
-              <div>
-                <h3 className="font-headline font-bold text-sm text-primary">Modo Prueba (Debug)</h3>
-                <p className="text-[11px] text-on-surface-variant mt-0.5">Muestra una figura interactiva simple para depuración</p>
-              </div>
-              <label className="relative inline-flex items-center cursor-pointer select-none">
-                <input 
-                  type="checkbox" 
-                  checked={filters.testMode || false}
-                  onChange={() => setFilters(prev => ({ ...prev, testMode: !prev.testMode }))}
-                  className="sr-only peer"
-                />
-                <div className="w-9 h-5 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
-              </label>
-            </div>
-
             {/* Elementos Checkbox Grid */}
             <section>
               <h3 className="font-body text-xs font-bold text-on-surface-variant mb-4 tracking-wider uppercase">Elementos</h3>
