@@ -40,10 +40,17 @@ export const ThreeViewport = ({
   const [showGroundGrid, setShowGroundGrid] = useState(true);
   const [showDebugPanel, setShowDebugPanel] = useState(true);
   const [enableShadows, setEnableShadows] = useState(true);
+  const [selectedLevelId, setSelectedLevelId] = useState<string>('3d');
 
-  // Reset fit-camera ref when modelData changes
+  // Sort levels by elevation
+  const sortedLevels = modelData 
+    ? [...modelData.levels].sort((a, b) => a.elevation - b.elevation) 
+    : [];
+
+  // Reset fit-camera ref and selected level when modelData changes
   useEffect(() => {
     hasFitCameraRef.current = false;
+    setSelectedLevelId('3d');
   }, [modelData]);
 
   // Sync ground grid visibility directly using ref
@@ -59,6 +66,48 @@ export const ThreeViewport = ({
       dirLightRef.current.castShadow = enableShadows;
     }
   }, [enableShadows]);
+
+  // Handle 2D Plan View camera transition and rotation locking
+  useEffect(() => {
+    const controls = controlsRef.current;
+    const camera = cameraRef.current;
+    if (!controls || !camera) return;
+
+    if (selectedLevelId === '3d') {
+      // Re-enable rotation
+      controls.enableRotate = true;
+      controls.mouseButtons = {
+        LEFT: THREE.MOUSE.ROTATE,
+        MIDDLE: THREE.MOUSE.DOLLY,
+        RIGHT: THREE.MOUSE.PAN
+      };
+    } else if (modelData) {
+      // Disable rotation for 2D plan view
+      controls.enableRotate = false;
+      controls.mouseButtons = {
+        LEFT: THREE.MOUSE.PAN,
+        MIDDLE: THREE.MOUSE.DOLLY,
+        RIGHT: THREE.MOUSE.PAN
+      };
+
+      const currentLevel = modelData.levels.find(l => l.id === selectedLevelId);
+      const elevation = currentLevel ? currentLevel.elevation : 0;
+
+      // Keep current X and Z of the target to prevent jumping horizontally
+      const target = controls.target.clone();
+      target.y = elevation;
+
+      // Calculate a reasonable camera height (distance to level floor plane)
+      const radius = Math.max(camera.position.distanceTo(controls.target), 30);
+
+      // Update controls target immediately so camera looks at the correct height
+      controls.target.copy(target);
+
+      // Smoothly move camera directly above, slightly offset on Z to prevent OrbitControls gimbal lock
+      const targetPos = new THREE.Vector3(target.x, elevation + radius, target.z + 0.001);
+      targetCameraPosition.current = targetPos;
+    }
+  }, [selectedLevelId, modelData]);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -294,13 +343,24 @@ export const ThreeViewport = ({
           return new THREE.Vector3(rx + tx, z + tz, ry + ty);
         };
 
+        // Get active level elevation for grid drawing
+        let activeLevelElevation = 0;
+        if (selectedLevelId !== '3d' && modelData.levels) {
+          const activeLvl = modelData.levels.find(l => l.id === selectedLevelId);
+          if (activeLvl) {
+            activeLevelElevation = activeLvl.elevation;
+          }
+        }
+
         // 1. Draw Grids
         if (showGrids && filters.elements.grillas && modelData.grids) {
           try {
             const gridMaterial = new THREE.LineBasicMaterial({ color: 0x737686, linewidth: 1 });
             modelData.grids.forEach((grid) => {
-              const p1 = convertCoords(grid.p1[0], grid.p1[1], 0);
-              const p2 = convertCoords(grid.p2[0], grid.p2[1], 0);
+              // Offset elevation slightly above floor plane to avoid z-fighting with slabs
+              const elevationOffset = activeLevelElevation + 0.01;
+              const p1 = convertCoords(grid.p1[0], grid.p1[1], elevationOffset);
+              const p2 = convertCoords(grid.p2[0], grid.p2[1], elevationOffset);
               const points = [p1, p2];
               const geometry = new THREE.BufferGeometry().setFromPoints(points);
               const line = new THREE.Line(geometry, gridMaterial);
@@ -325,7 +385,11 @@ export const ThreeViewport = ({
           modelData.elements.walls.forEach((wall) => {
             try {
               // Filter by Level
-              if (!checkedLevels.has(wall.level)) return;
+              if (selectedLevelId !== '3d') {
+                if (wall.level !== selectedLevelId) return;
+              } else {
+                if (!checkedLevels.has(wall.level)) return;
+              }
 
               // Filter by Section checked state
               if (!checkedWallsSecs.has(wall.section)) return;
@@ -392,7 +456,11 @@ export const ThreeViewport = ({
 
           modelData.elements.beams.forEach((beam) => {
             try {
-              if (!checkedLevels.has(beam.level)) return;
+              if (selectedLevelId !== '3d') {
+                if (beam.level !== selectedLevelId) return;
+              } else {
+                if (!checkedLevels.has(beam.level)) return;
+              }
               if (!checkedBeamsSecs.has(beam.section)) return;
 
               // Filter by Thickness width
@@ -449,7 +517,11 @@ export const ThreeViewport = ({
 
           modelData.elements.slabs.forEach((slab) => {
             try {
-              if (!checkedLevels.has(slab.level)) return;
+              if (selectedLevelId !== '3d') {
+                if (slab.level !== selectedLevelId) return;
+              } else {
+                if (!checkedLevels.has(slab.level)) return;
+              }
               if (!checkedSlabsSecs.has(slab.section)) return;
 
               const slabSec = modelData.sections.find(s => s.code_name === slab.section);
@@ -560,9 +632,39 @@ export const ThreeViewport = ({
       console.error('Geometry update error:', err);
       setErrorLog(err.message || String(err));
     }
-  }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation]);
+  }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation, selectedLevelId]);
+
+  const handleGoUp = () => {
+    if (!sortedLevels.length) return;
+    if (selectedLevelId === '3d') {
+      setSelectedLevelId(sortedLevels[0].id);
+    } else {
+      const idx = sortedLevels.findIndex((l) => l.id === selectedLevelId);
+      if (idx < sortedLevels.length - 1) {
+        setSelectedLevelId(sortedLevels[idx + 1].id);
+      }
+    }
+  };
+
+  const handleGoDown = () => {
+    if (!sortedLevels.length) return;
+    if (selectedLevelId === '3d') {
+      setSelectedLevelId(sortedLevels[sortedLevels.length - 1].id);
+    } else {
+      const idx = sortedLevels.findIndex((l) => l.id === selectedLevelId);
+      if (idx > 0) {
+        setSelectedLevelId(sortedLevels[idx - 1].id);
+      }
+    }
+  };
+
+  const isUpDisabled = sortedLevels.length > 0 && selectedLevelId === sortedLevels[sortedLevels.length - 1].id;
+  const isDownDisabled = sortedLevels.length > 0 && selectedLevelId === sortedLevels[0].id;
 
   const handleFaceClick = (face: string) => {
+    // Switch to Vista 3D first when clicking ViewCube to restore 3D rotation and elements
+    setSelectedLevelId('3d');
+
     const camera = cameraRef.current;
     const controls = controlsRef.current;
     if (!camera || !controls) return;
@@ -653,10 +755,92 @@ export const ThreeViewport = ({
         .cube-face.top    { transform: rotateX(90deg) translateZ(30px); }
         .cube-face.bottom { transform: rotateX(-90deg) translateZ(30px); }
 
+        .plan-view-container {
+          position: absolute;
+          top: 112px; /* Positioned below the ViewCube */
+          right: 16px;
+          width: 120px;
+          z-index: 100;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          background: rgba(250, 248, 255, 0.85);
+          border: 1.5px solid rgba(0, 74, 198, 0.4);
+          border-radius: 8px;
+          padding: 8px;
+          box-shadow: 0 4px 12px rgba(25, 27, 35, 0.08);
+          pointer-events: auto;
+          font-family: 'Manrope', sans-serif;
+        }
+        .plan-view-title {
+          font-size: 8px;
+          font-weight: 800;
+          color: #004ac6;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          text-align: center;
+        }
+        .plan-view-select {
+          width: 100%;
+          font-size: 11px;
+          font-weight: 600;
+          color: #004ac6;
+          background: rgba(250, 248, 255, 0.9);
+          border: 1.5px solid rgba(0, 74, 198, 0.3);
+          border-radius: 6px;
+          padding: 6px 8px;
+          cursor: pointer;
+          outline: none;
+          transition: border-color 0.2s, background-color 0.2s;
+          appearance: none;
+          background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23004ac6' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3e%3cpath d='M6 9l6 6 6-6'/%3e%3c/svg%3e");
+          background-repeat: no-repeat;
+          background-position: right 8px center;
+          background-size: 12px;
+          padding-right: 24px;
+        }
+        .plan-view-select:hover {
+          background-color: rgba(230, 235, 255, 0.9);
+          border-color: #004ac6;
+        }
+        .plan-view-arrows {
+          display: flex;
+          gap: 6px;
+          width: 100%;
+        }
+        .arrow-btn {
+          flex: 1;
+          height: 28px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(250, 248, 255, 0.85);
+          border: 1.5px solid rgba(0, 74, 198, 0.3);
+          border-radius: 6px;
+          color: #004ac6;
+          cursor: pointer;
+          transition: background-color 0.2s, color 0.2s, border-color 0.2s, transform 0.1s;
+        }
+        .arrow-btn:hover:not(:disabled) {
+          background: #004ac6;
+          color: #ffffff;
+          border-color: #004ac6;
+        }
+        .arrow-btn:active:not(:disabled) {
+          transform: scale(0.95);
+        }
+        .arrow-btn:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+          background: rgba(250, 248, 255, 0.4);
+          border-color: rgba(0, 74, 198, 0.2);
+          color: rgba(0, 74, 198, 0.4);
+        }
+
         .options-column {
           position: absolute;
-          top: 112px; /* Increased to avoid 3D diagonal corner overlap on rotation */
-          right: 28px; /* Centered below the cube */
+          top: 228px; /* Shifted down to accommodate the plan view card and avoid overlapping cube */
+          right: 58px; /* Centered relative to the plan view card */
           z-index: 100;
           display: flex;
           flex-direction: column;
@@ -706,6 +890,47 @@ export const ThreeViewport = ({
           </div>
         </div>
       </div>
+
+      {/* Vistas en Planta Card */}
+      {modelData && sortedLevels.length > 0 && (
+        <div className="plan-view-container">
+          <div className="plan-view-title">Planta</div>
+          <select 
+            value={selectedLevelId} 
+            onChange={(e) => setSelectedLevelId(e.target.value)}
+            className="plan-view-select"
+          >
+            <option value="3d">Vista 3D</option>
+            {sortedLevels.map((lvl) => (
+              <option key={lvl.id} value={lvl.id}>
+                {lvl.name}
+              </option>
+            ))}
+          </select>
+          <div className="plan-view-arrows">
+            <button 
+              onClick={handleGoDown}
+              disabled={isDownDisabled}
+              className="arrow-btn"
+              title="Bajar nivel"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+              </svg>
+            </button>
+            <button 
+              onClick={handleGoUp}
+              disabled={isUpDisabled}
+              className="arrow-btn"
+              title="Subir nivel"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Modeling Options Column */}
       <div className="options-column">
