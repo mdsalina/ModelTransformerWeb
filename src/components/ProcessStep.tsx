@@ -23,13 +23,114 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, isCompleted
   const [isProcessing, setIsProcessing] = useState(false);
   const [processStateMessage, setProcessStateMessage] = useState('Esperando parámetros...');
   const [showToast, setShowToast] = useState(isCompleted);
-  const [gridVisible, setGridVisible] = useState(true);
 
   useEffect(() => {
     if (isCompleted) {
       setShowToast(true);
     }
   }, [isCompleted]);
+
+  const handleExportJson = () => {
+    if (!modelData) return;
+
+    // 1. Obtener niveles marcados
+    const checkedLevels = new Set(
+      filters.levels.filter((l) => l.checked).map((l) => l.id)
+    );
+
+    // 2. Obtener secciones marcadas
+    const checkedWallsSecs = new Set(
+      filters.walls.filter((s) => s.checked).map((s) => s.name)
+    );
+    const checkedBeamsSecs = new Set(
+      filters.beams.filter((s) => s.checked).map((s) => s.name)
+    );
+    const checkedSlabsSecs = new Set(
+      filters.slabs.filter((s) => s.checked).map((s) => s.name)
+    );
+
+    // 3. Filtrar muros
+    const filteredWalls = (modelData.elements.walls || []).filter((wall) => {
+      if (!filters.elements.muros) return false;
+      if (!checkedLevels.has(wall.level)) return false;
+      if (!checkedWallsSecs.has(wall.section)) return false;
+
+      const wallSec = modelData.sections.find(s => s.code_name === wall.section);
+      if (wallSec) {
+        const thickness = (wallSec.parameters.thickness || 0.2) * 1000;
+        if (thickness < filters.thickness.walls.min || thickness > filters.thickness.walls.max) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    // 4. Filtrar vigas
+    const filteredBeams = (modelData.elements.beams || []).filter((beam) => {
+      if (!filters.elements.vigas) return false;
+      if (!checkedLevels.has(beam.level)) return false;
+      if (!checkedBeamsSecs.has(beam.section)) return false;
+
+      const beamSec = modelData.sections.find(s => s.code_name === beam.section);
+      if (beamSec) {
+        const thickness = (beamSec.parameters.width || 0.2) * 1000;
+        if (thickness < filters.thickness.beams.min || thickness > filters.thickness.beams.max) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    // 5. Filtrar losas
+    const filteredSlabs = (modelData.elements.slabs || []).filter((slab) => {
+      if (!filters.elements.losas) return false;
+      if (!checkedLevels.has(slab.level)) return false;
+      if (!checkedSlabsSecs.has(slab.section)) return false;
+
+      const slabSec = modelData.sections.find(s => s.code_name === slab.section);
+      if (slabSec) {
+        const thickness = (slabSec.parameters.thickness || 0.15) * 1000;
+        if (thickness < filters.thickness.slabs.min || thickness > filters.thickness.slabs.max) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    // 6. Columnas
+    const filteredColumns = modelData.elements.columns || [];
+
+    // 7. Grillas
+    const filteredGrids = filters.elements.grillas ? (modelData.grids || []) : [];
+
+    // 8. Crear estructura final
+    const filteredData: JsonModelData = {
+      ...modelData,
+      grids: filteredGrids,
+      elements: {
+        ...modelData.elements,
+        walls: filteredWalls,
+        beams: filteredBeams,
+        slabs: filteredSlabs,
+        columns: filteredColumns
+      }
+    };
+
+    const jsonString = JSON.stringify(filteredData, null, 4);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    
+    // Nombre del archivo limpio sufijado con _filtered
+    const rawName = modelData.project_info.name || 'modelo';
+    const cleanName = rawName.replace(/[^a-zA-Z0-9_.-]/g, '_');
+    a.href = url;
+    a.download = `${cleanName}_filtered.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   const runProcessing = () => {
     if (isProcessing) return;
@@ -57,6 +158,7 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, isCompleted
         setProcessStateMessage('Modelo Optimizado');
         setShowToast(true);
         onProcessCompleted();
+        handleExportJson();
       }
     }, 600);
   };
@@ -408,7 +510,7 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, isCompleted
             <ThreeViewport 
               modelData={modelData}
               filters={filters}
-              showGrids={gridVisible}
+              showGrids={true}
               activeStep="process"
               processTranslation={
                 params.processes.moveModel 
@@ -416,34 +518,6 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, isCompleted
                   : { dx: 0, dy: 0, dz: 0, alpha: 0 }
               }
             />
-          </div>
-
-          {/* Floating Glass Viewport controls */}
-          <div className="absolute top-6 left-6 glass-panel rounded-lg p-2 flex flex-col gap-2 ambient-shadow border border-outline-variant/15 z-20">
-            <button 
-              onClick={() => setGridVisible(prev => !prev)}
-              className={`p-2 rounded transition-colors group relative ${
-                gridVisible ? 'text-primary bg-primary-fixed/30 hover:bg-primary-fixed/50' : 'text-on-surface hover:bg-surface-container-low'
-              }`}
-              title="Toggle Grid"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9h16.5m-16.5 6h16.5M9 3.75v16.5m6-16.5v16.5" />
-              </svg>
-            </button>
-          </div>
-
-          {/* Processing Status Overlay */}
-          <div className="absolute top-6 right-6 glass-panel rounded-lg px-4 py-3 ambient-shadow border border-outline-variant/15 flex items-center gap-3 z-20">
-            <SyncIcon className={`text-primary w-5 h-5 ${isProcessing ? 'animate-spin' : ''}`} />
-            <div>
-              <p className="font-body text-xs font-semibold text-on-surface">
-                {isProcessing ? 'Procesando...' : isCompleted ? 'Modelo Optimizado' : 'Modelo Listo'}
-              </p>
-              <p className="font-body text-[10px] text-on-surface-variant truncate max-w-[140px]">
-                {isProcessing ? processStateMessage : isCompleted ? 'Procesado con éxito' : 'Esperando parámetros...'}
-              </p>
-            </div>
           </div>
 
           {/* Live Loading Overlay */}

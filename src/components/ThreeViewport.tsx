@@ -634,6 +634,21 @@ export const ThreeViewport = ({
           ? modelData.grids.find(g => g.name === selectedGridName)
           : null;
 
+        // Calculate grid tolerance based on the project's unit system (defaulting to 0.02 if unit_system is 'm')
+        let gridTolerance = 0.02;
+        if (modelData.project_info?.unit_system) {
+          const unit = modelData.project_info.unit_system.toLowerCase();
+          if (unit === 'cm') {
+            gridTolerance = 2.0;
+          } else if (unit === 'mm') {
+            gridTolerance = 20.0;
+          } else if (unit === 'ft' || unit === 'foot' || unit === 'feet') {
+            gridTolerance = 0.02 / 0.3048;
+          } else if (unit === 'in' || unit === 'inch' || unit === 'inches') {
+            gridTolerance = 0.02 / 0.0254;
+          }
+        }
+
         // Get active level elevation for grid drawing
         let activeLevelElevation = 0;
         if (selectedLevelId !== '3d' && modelData.levels) {
@@ -706,7 +721,7 @@ export const ThreeViewport = ({
                   
                   const d1 = getDistanceToGridLine(pStartOrig[0], pStartOrig[1], selectedGrid);
                   const d2 = getDistanceToGridLine(pEndOrig[0], pEndOrig[1], selectedGrid);
-                  if (d1 > 0.5 || d2 > 0.5) return; // 0.5m tolerance
+                  if (d1 > gridTolerance || d2 > gridTolerance) return; // Unit-aware grid tolerance
                   
                   // Overlap check
                   const tStart = getGridProjectionT(pStartOrig[0], pStartOrig[1], selectedGrid);
@@ -841,7 +856,7 @@ export const ThreeViewport = ({
                 if (start && end) {
                   const d1 = getDistanceToGridLine(start[0], start[1], selectedGrid);
                   const d2 = getDistanceToGridLine(end[0], end[1], selectedGrid);
-                  if (d1 > 0.5 || d2 > 0.5) return; // 0.5m tolerance
+                  if (d1 > gridTolerance || d2 > gridTolerance) return; // Unit-aware grid tolerance
                   
                   // Overlap check
                   const tStart = getGridProjectionT(start[0], start[1], selectedGrid);
