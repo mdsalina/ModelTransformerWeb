@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { ProcessingParams, FiltersState, JsonModelData } from '../types';
 import { 
@@ -13,25 +13,19 @@ import { ThreeViewport } from './ThreeViewport';
 interface ProcessStepProps {
   params: ProcessingParams;
   setParams: Dispatch<SetStateAction<ProcessingParams>>;
-  onProcessCompleted: () => void;
-  isCompleted: boolean;
+  onProcessCompleted: (updatedModelData: JsonModelData) => void;
   modelData: JsonModelData | null;
   filters: FiltersState;
 }
 
-export const ProcessStep = ({ params, setParams, onProcessCompleted, isCompleted, modelData, filters }: ProcessStepProps) => {
+export const ProcessStep = ({ params, setParams, onProcessCompleted, modelData, filters }: ProcessStepProps) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processStateMessage, setProcessStateMessage] = useState('Esperando parámetros...');
-  const [showToast, setShowToast] = useState(isCompleted);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (isCompleted) {
-      setShowToast(true);
-    }
-  }, [isCompleted]);
-
-  const handleExportJson = () => {
-    if (!modelData) return;
+  const getFilteredModelData = (): JsonModelData | null => {
+    if (!modelData) return null;
 
     // 1. Obtener niveles marcados
     const checkedLevels = new Set(
@@ -104,7 +98,7 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, isCompleted
     const filteredGrids = filters.elements.grillas ? (modelData.grids || []) : [];
 
     // 8. Crear estructura final
-    const filteredData: JsonModelData = {
+    return {
       ...modelData,
       grids: filteredGrids,
       elements: {
@@ -115,52 +109,74 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, isCompleted
         columns: filteredColumns
       }
     };
-
-    const jsonString = JSON.stringify(filteredData, null, 4);
-    const blob = new Blob([jsonString], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    
-    // Nombre del archivo limpio sufijado con _filtered
-    const rawName = modelData.project_info.name || 'modelo';
-    const cleanName = rawName.replace(/[^a-zA-Z0-9_.-]/g, '_');
-    a.href = url;
-    a.download = `${cleanName}_filtered.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   };
 
-  const runProcessing = () => {
+
+
+  const runProcessing = async () => {
     if (isProcessing) return;
     setIsProcessing(true);
-    setShowToast(false);
+    setErrorMessage(null);
 
-    const steps = [
-      'Cargando geometría base...',
-      'Generando grillas estructurales...',
-      'Alineando nodos y columnas...',
-      'Dividir muros e intersecciones...',
-      'Optimizando malla de elementos...'
-    ];
+    setProcessStateMessage('Filtrando geometría...');
 
-    let current = 0;
-    setProcessStateMessage(steps[0]);
-
-    const interval = setInterval(() => {
-      current++;
-      if (current < steps.length) {
-        setProcessStateMessage(steps[current]);
-      } else {
-        clearInterval(interval);
-        setIsProcessing(false);
-        setProcessStateMessage('Modelo Optimizado');
-        setShowToast(true);
-        onProcessCompleted();
-        handleExportJson();
+    try {
+      const filteredData = getFilteredModelData();
+      if (!filteredData) {
+        throw new Error('No hay datos del modelo para procesar.');
       }
-    }, 600);
+
+      setProcessStateMessage('Enviando datos al servidor backend...');
+
+      const payloadParams = {
+        angularTolerance: params.grid.angularTolerance,
+        distanceTolerance: params.grid.distanceTolerance,
+        roundDecimal: params.grid.decimals,
+        snapThreshold: params.model.snapThreshold,
+        canonicalAngles: params.model.canonicalAngles
+          ? params.model.canonicalAngles.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n))
+          : [],
+        maxDistance: params.model.maxNodeClusterDistance,
+        lmin: params.model.minElementLength,
+        dz: params.model.verticalOffset,
+        dzLevel: params.model.levelAdjustment,
+        beamGrid: params.grid.generateForBeams,
+        divideOnlyWallsByIntersection: params.model.splitWallsOnBeams,
+        keepGrids: params.grid.keepExisting,
+        gridTolerance: params.grid.gridTolerance
+      };
+
+      const response = await fetch('http://127.0.0.1:8000/procesar', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          revit_json_data: filteredData,
+          params: payloadParams
+        })
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null);
+        const detail = errorBody?.detail || response.statusText;
+        throw new Error(`Error del servidor backend: ${detail}`);
+      }
+
+      const processedData = await response.json();
+
+      setProcessStateMessage('Modelo Optimizado');
+      setIsProcessing(false);
+      setShowSuccessModal(true);
+
+      onProcessCompleted(processedData);
+
+    } catch (error: any) {
+      console.error(error);
+      setErrorMessage(error.message || 'Error de conexión con el backend.');
+      setIsProcessing(false);
+      setProcessStateMessage('Error en el procesamiento');
+    }
   };
 
   const handleGridParamChange = (key: keyof ProcessingParams['grid'], value: any) => {
@@ -228,6 +244,16 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, isCompleted
                 />
               </div>
               <div className="flex flex-col gap-1.5">
+                <label className="font-body text-xs font-semibold text-on-surface-variant">Tolerancia distancia elementos (m)</label>
+                <input 
+                  type="number"
+                  step="0.01"
+                  className="w-full bg-surface-container px-3 py-2 rounded-md border border-outline-variant/30 text-sm font-body text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all"
+                  value={params.grid.distanceTolerance}
+                  onChange={(e) => handleGridParamChange('distanceTolerance', parseFloat(e.target.value) || 0)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
                 <label className="font-body text-xs font-semibold text-on-surface-variant">Distancia mínima entre grillas (m)</label>
                 <input 
                   type="number"
@@ -235,6 +261,16 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, isCompleted
                   className="w-full bg-surface-container px-3 py-2 rounded-md border border-outline-variant/30 text-sm font-body text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all"
                   value={params.grid.minDistance}
                   onChange={(e) => handleGridParamChange('minDistance', parseFloat(e.target.value) || 0)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="font-body text-xs font-semibold text-on-surface-variant">Tolerancia ajuste grilla (m)</label>
+                <input 
+                  type="number"
+                  step="0.01"
+                  className="w-full bg-surface-container px-3 py-2 rounded-md border border-outline-variant/30 text-sm font-body text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all"
+                  value={params.grid.gridTolerance}
+                  onChange={(e) => handleGridParamChange('gridTolerance', parseFloat(e.target.value) || 0)}
                 />
               </div>
               <div className="flex flex-col gap-1.5">
@@ -302,6 +338,16 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, isCompleted
                   onChange={(e) => handleModelParamChange('canonicalAngles', e.target.value)}
                 />
                 <p className="text-[10px] text-on-surface-variant">Separados por comas</p>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="font-body text-xs font-semibold text-on-surface-variant">Tolerancia angular snap (°)</label>
+                <input 
+                  type="number"
+                  step="1"
+                  className="w-full bg-surface-container px-3 py-2 rounded-md border border-outline-variant/30 text-sm font-body text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all"
+                  value={params.model.snapThreshold}
+                  onChange={(e) => handleModelParamChange('snapThreshold', parseFloat(e.target.value) || 0)}
+                />
               </div>
               <div className="flex flex-col gap-1.5">
                 <label className="font-body text-xs font-semibold text-on-surface-variant">Máx. distancia agrupación nodos (m)</label>
@@ -520,21 +566,39 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, isCompleted
             />
           </div>
 
-          {/* Live Loading Overlay */}
-          {isProcessing && (
+          {/* Processing / Success Modal Overlay */}
+          {(isProcessing || showSuccessModal) && (
             <div className="absolute inset-0 bg-background/40 backdrop-blur-[2px] flex flex-col items-center justify-center z-15">
-              <div className="bg-surface p-6 rounded-xl border border-outline-variant/20 shadow-xl flex flex-col items-center gap-4 animate-bounce">
-                <SyncIcon className="w-8 h-8 text-primary animate-spin" />
-                <span className="font-headline font-bold text-sm text-on-surface">{processStateMessage}</span>
+              <div className={`bg-surface p-6 rounded-xl border border-outline-variant/20 shadow-xl flex flex-col items-center gap-4 max-w-[320px] text-center ${isProcessing ? 'animate-bounce' : 'animate-fade-in'}`}>
+                {isProcessing ? (
+                  <>
+                    <SyncIcon className="w-8 h-8 text-primary animate-spin" />
+                    <span className="font-headline font-bold text-sm text-on-surface">{processStateMessage}</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircleIcon className="w-8 h-8 text-primary" />
+                    <span className="font-headline font-bold text-sm text-on-surface">Procesamiento completado con éxito</span>
+                    <button 
+                      onClick={() => setShowSuccessModal(false)}
+                      className="mt-2 px-6 py-2 bg-primary text-on-primary font-body font-semibold text-sm rounded-md hover:bg-primary/90 transition-all cursor-pointer shadow-sm hover:scale-[0.98] active:scale-[0.96]"
+                    >
+                      Ok
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}
 
-          {/* Success Toast */}
-          {showToast && !isProcessing && (
-            <div className="absolute bottom-6 right-6 glass-panel px-5 py-3 rounded-lg flex items-center gap-3 shadow-[0_8px_32px_rgba(25,27,35,0.06)] border border-primary/20 animate-fade-in z-20">
-              <CheckCircleIcon className="text-primary w-5 h-5" />
-              <span className="font-body text-sm font-medium text-on-surface">Procesamiento completado con éxito</span>
+          {/* Error Toast */}
+          {errorMessage && (
+            <div className="absolute bottom-6 right-6 bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 px-5 py-3 rounded-lg flex flex-col gap-2 shadow-[0_8px_32px_rgba(25,27,35,0.08)] border border-red-500/20 animate-fade-in z-25 max-w-[320px]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-body text-sm font-bold">Error de Procesamiento</span>
+                <button onClick={() => setErrorMessage(null)} className="text-xs hover:underline text-red-500 font-semibold cursor-pointer">Cerrar</button>
+              </div>
+              <p className="font-body text-xs break-words">{errorMessage}</p>
             </div>
           )}
         </div>

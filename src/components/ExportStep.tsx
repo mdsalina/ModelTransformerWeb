@@ -4,7 +4,6 @@ import type { ExportState, FileDetails, FiltersState, JsonModelData } from '../t
 import { 
   LayersIcon, 
   MemoryIcon, 
-  CheckCircleIcon, 
   InfoIcon, 
   DownloadIcon,
   CheckIcon
@@ -34,23 +33,44 @@ export const ExportStep = ({ exportState, setExportState, fileDetails, modelData
     setDownloadCompleted(false);
   };
 
+  const downloadJson = (data: JsonModelData) => {
+    const jsonString = JSON.stringify(data, null, 4);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    
+    const rawName = data.project_info.name || 'modelo';
+    const cleanName = rawName.replace(/[^a-zA-Z0-9_.-]/g, '_');
+    a.href = url;
+    a.download = `${cleanName}_processed.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const startDownload = () => {
     if (downloading) return;
     setDownloading(true);
     setProgress(0);
     setDownloadCompleted(false);
 
+    let currentProgress = 0;
     const interval = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setDownloading(false);
-          setDownloadCompleted(true);
-          setExportState(prev => ({ ...prev, completed: true }));
-          return 100;
+      currentProgress += 10;
+      if (currentProgress >= 100) {
+        clearInterval(interval);
+        setProgress(100);
+        setDownloading(false);
+        setDownloadCompleted(true);
+        setExportState(prev => ({ ...prev, completed: true }));
+        
+        if (modelData) {
+          downloadJson(modelData);
         }
-        return prev + 10;
-      });
+      } else {
+        setProgress(currentProgress);
+      }
     }, 150);
   };
 
@@ -92,11 +112,6 @@ export const ExportStep = ({ exportState, setExportState, fileDetails, modelData
           </div>
         </div>
 
-        {/* Success Toast Overlay */}
-        <div className="absolute top-6 right-6 glass-panel px-5 py-3 rounded-lg flex items-center gap-3 shadow-[0_8px_32px_rgba(25,27,35,0.06)] border border-primary/20 z-10 animate-fade-in">
-          <CheckCircleIcon className="text-primary w-5 h-5" />
-          <span className="font-body text-sm font-semibold text-on-surface">Procesamiento completado con éxito</span>
-        </div>
       </main>
 
       {/* Right Side: Configuration Panel */}

@@ -59,7 +59,9 @@ export const BimModelTransformer = () => {
       minDistance: 0.5,
       decimals: 2,
       generateForBeams: true,
-      keepExisting: false
+      keepExisting: false,
+      distanceTolerance: 0.15,
+      gridTolerance: 0.5
     },
     model: {
       canonicalAngles: '0, 90, 180, 270',
@@ -67,7 +69,8 @@ export const BimModelTransformer = () => {
       minElementLength: 0.2,
       verticalOffset: 0.0,
       levelAdjustment: 0.1,
-      splitWallsOnBeams: true
+      splitWallsOnBeams: true,
+      snapThreshold: 20
     },
     processes: {
       target: 'RVT',
@@ -103,10 +106,7 @@ export const BimModelTransformer = () => {
     setCurrentStep('upload');
   };
 
-  const handleFileUploaded = (file: FileDetails, data: JsonModelData) => {
-    setFileDetails(file);
-    setModelData(data);
-    
+  const updateFiltersAndLimitsFromModel = (data: JsonModelData) => {
     // 1. Process levels
     const dynamicLevels = data.levels.map(l => ({
       id: l.id,
@@ -177,6 +177,12 @@ export const BimModelTransformer = () => {
     });
   };
 
+  const handleFileUploaded = (file: FileDetails, data: JsonModelData) => {
+    setFileDetails(file);
+    setModelData(data);
+    updateFiltersAndLimitsFromModel(data);
+  };
+
   const handleClearFile = () => {
     setFileDetails(null);
     setModelData(null);
@@ -186,7 +192,9 @@ export const BimModelTransformer = () => {
     setExportState(prev => ({ ...prev, completed: false }));
   };
 
-  const handleProcessCompleted = () => {
+  const handleProcessCompleted = (updatedModelData: JsonModelData) => {
+    setModelData(updatedModelData);
+    updateFiltersAndLimitsFromModel(updatedModelData);
     setProcessingCompleted(true);
   };
 
@@ -393,7 +401,6 @@ export const BimModelTransformer = () => {
             params={processingParams} 
             setParams={setProcessingParams} 
             onProcessCompleted={handleProcessCompleted}
-            isCompleted={processingCompleted}
             modelData={modelData}
             filters={filters}
           />

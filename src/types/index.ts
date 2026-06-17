@@ -46,6 +46,8 @@ export interface ProcessingParams {
     decimals: number;
     generateForBeams: boolean;
     keepExisting: boolean;
+    distanceTolerance: number;
+    gridTolerance: number;
   };
   model: {
     canonicalAngles: string; // comma separated
@@ -54,6 +56,7 @@ export interface ProcessingParams {
     verticalOffset: number;
     levelAdjustment: number;
     splitWallsOnBeams: boolean;
+    snapThreshold: number;
   };
   processes: {
     target: 'RVT' | 'ETABS';
