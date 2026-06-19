@@ -1,24 +1,19 @@
 import { useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import type { ExportState, FileDetails, FiltersState, JsonModelData } from '../types';
+import type { ExportState, JsonModelData } from '../types';
 import {
-  LayersIcon,
-  MemoryIcon,
   InfoIcon,
   DownloadIcon,
   CheckIcon
 } from './Icons';
-import { ThreeViewport } from './ThreeViewport';
 
 interface ExportStepProps {
   exportState: ExportState;
   setExportState: Dispatch<SetStateAction<ExportState>>;
-  fileDetails: FileDetails | null;
   modelData: JsonModelData | null;
-  filters: FiltersState;
 }
 
-export const ExportStep = ({ exportState, setExportState, fileDetails, modelData, filters }: ExportStepProps) => {
+export const ExportStep = ({ exportState, setExportState, modelData }: ExportStepProps) => {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [downloadCompleted, setDownloadCompleted] = useState(false);
@@ -231,7 +226,7 @@ export const ExportStep = ({ exportState, setExportState, fileDetails, modelData
   };
 
   return (
-    <div className="flex flex-1 overflow-hidden pt-4 pb-8 px-4 md:px-8 gap-6 h-[calc(100vh-72px)] select-none flex-col md:flex-row">
+    <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative z-10 select-none pointer-events-none h-full w-full">
       {/* Inline styles for modal animations */}
       <style dangerouslySetInnerHTML={{
         __html: `
@@ -252,136 +247,107 @@ export const ExportStep = ({ exportState, setExportState, fileDetails, modelData
         }
       `}} />
 
-      {/* Left Side: 3D Preview Canvas */}
-      <main className="flex-1 rounded-xl bg-surface-dim relative overflow-hidden flex flex-col group min-h-[300px] border border-outline-variant/15">
-        {/* Three.js 3D Viewport Area */}
-        <div className="absolute inset-0 w-full h-full">
-          <ThreeViewport
-            modelData={modelData}
-            filters={filters}
-            showGrids={false}
-            activeStep="export"
-          />
-        </div>
+      {/* Left Side: Configuration Panel (Sidebar) */}
+      <aside className="w-full md:w-[360px] flex-shrink-0 flex flex-col bg-background h-full overflow-hidden border-r border-outline-variant/15 pointer-events-auto shadow-[4px_0_24px_rgba(25,27,35,0.02)] z-10">
+        <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6">
+          <header className="flex flex-col gap-1">
+            <h1 className="font-headline text-2xl font-bold text-on-surface tracking-tight">Exportar</h1>
+            <p className="font-body text-sm text-on-surface-variant">Configura el formato final para tu modelo optimizado.</p>
+          </header>
 
-        {/* Contextual Overlay Bottom Left */}
-        <div className="absolute bottom-6 left-6 glass-panel px-4 py-3 rounded-lg flex items-center gap-4 shadow-[0_8px_32px_rgba(25,27,35,0.06)] border border-outline-variant/15 z-10">
-          <div className="flex items-center gap-2">
-            <LayersIcon className="text-primary w-5 h-5" />
-            <span className="font-body text-sm font-semibold text-on-surface">
-              {fileDetails ? `Optimized_${fileDetails.name}` : 'V6_Optimized_Mesh'}
-            </span>
-          </div>
-          <div className="w-px h-4 bg-outline-variant/30"></div>
-          <div className="flex items-center gap-2 text-on-surface-variant font-body text-xs">
-            <MemoryIcon className="w-4 h-4" />
-            <span>Polígonos: 24.5k</span>
-          </div>
-        </div>
-      </main>
+          {/* Export Formats Group */}
+          <div className="flex flex-col gap-4 mt-2">
+            <h3 className="font-body text-sm font-semibold text-on-surface">Formato de Salida</h3>
+            <div className="flex flex-col gap-3">
+              {/* Format Option 1 (.RVT) */}
+              <label
+                onClick={() => handleFormatChange('rvt')}
+                className={`cursor-pointer relative flex items-start gap-4 p-4 rounded-lg border transition-all duration-200 ${exportState.format === 'rvt'
+                    ? 'bg-primary-fixed border-primary/20 ring-1 ring-primary/10'
+                    : 'bg-surface-container-lowest hover:bg-surface-container border-outline-variant/15'
+                  }`}
+              >
+                <div className="pt-1">
+                  <input
+                    type="radio"
+                    name="export_format"
+                    checked={exportState.format === 'rvt'}
+                    onChange={() => { }}
+                    className="w-4 h-4 text-primary bg-surface-container-lowest border-outline focus:ring-primary focus:ring-2 cursor-pointer"
+                  />
+                </div>
+                <div className="flex flex-col flex-1 gap-1">
+                  <span className={`font-body text-sm font-bold ${exportState.format === 'rvt' ? 'text-on-primary-fixed-variant' : 'text-on-surface'
+                    }`}>.RVT (Revit)</span>
+                  <span className={`font-body text-xs ${exportState.format === 'rvt' ? 'text-on-secondary-fixed-variant' : 'text-on-surface-variant'
+                    }`}>Modelo BIM nativo con metadatos preservados. Ideal para integraciones directas.</span>
+                </div>
+                {exportState.format === 'rvt' && (
+                  <CheckIcon className="text-primary w-5 h-5 self-center absolute right-4" />
+                )}
+              </label>
 
-      {/* Right Side: Configuration Panel */}
-      <aside className="w-full md:w-80 lg:w-96 flex flex-col gap-6 bg-surface-container-low rounded-xl p-6 overflow-y-auto border border-outline-variant/15">
-        <header className="flex flex-col gap-1">
-          <h1 className="font-headline text-2xl font-bold text-on-surface tracking-tight">Exportar</h1>
-          <p className="font-body text-sm text-on-surface-variant">Configura el formato final para tu modelo optimizado.</p>
-        </header>
+              {/* Format Option 2 (.EDB) */}
+              <label
+                onClick={() => handleFormatChange('edb')}
+                className={`cursor-pointer relative flex items-start gap-4 p-4 rounded-lg border transition-all duration-200 ${exportState.format === 'edb'
+                    ? 'bg-primary-fixed border-primary/20 ring-1 ring-primary/10'
+                    : 'bg-surface-container-lowest hover:bg-surface-container border-outline-variant/15'
+                  }`}
+              >
+                <div className="pt-1">
+                  <input
+                    type="radio"
+                    name="export_format"
+                    checked={exportState.format === 'edb'}
+                    onChange={() => { }}
+                    className="w-4 h-4 text-primary bg-surface-container-lowest border-outline focus:ring-primary focus:ring-2 cursor-pointer"
+                  />
+                </div>
+                <div className="flex flex-col flex-1 gap-1">
+                  <span className={`font-body text-sm font-bold ${exportState.format === 'edb' ? 'text-on-primary-fixed-variant' : 'text-on-surface'
+                    }`}>.EDB (ETABS)</span>
+                  <span className={`font-body text-xs ${exportState.format === 'edb' ? 'text-on-secondary-fixed-variant' : 'text-on-surface-variant'
+                    }`}>Inyección directa por API COM de elementos estructurales y perfiles en ETABS.</span>
+                </div>
+                {exportState.format === 'edb' && (
+                  <CheckIcon className="text-primary w-5 h-5 self-center absolute right-4" />
+                )}
+              </label>
 
-        {/* Export Formats Group */}
-        <div className="flex flex-col gap-4 mt-2">
-          <h3 className="font-body text-sm font-semibold text-on-surface">Formato de Salida</h3>
-          <div className="flex flex-col gap-3">
-            {/* Format Option 1 (.RVT) */}
-            <label
-              onClick={() => handleFormatChange('rvt')}
-              className={`cursor-pointer relative flex items-start gap-4 p-4 rounded-lg border transition-all duration-200 ${exportState.format === 'rvt'
-                  ? 'bg-primary-fixed border-primary/20 ring-1 ring-primary/10'
-                  : 'bg-surface-container-lowest hover:bg-surface-container border-outline-variant/15'
-                }`}
-            >
-              <div className="pt-1">
-                <input
-                  type="radio"
-                  name="export_format"
-                  checked={exportState.format === 'rvt'}
-                  onChange={() => { }}
-                  className="w-4 h-4 text-primary bg-surface-container-lowest border-outline focus:ring-primary focus:ring-2 cursor-pointer"
-                />
-              </div>
-              <div className="flex flex-col flex-1 gap-1">
-                <span className={`font-body text-sm font-bold ${exportState.format === 'rvt' ? 'text-on-primary-fixed-variant' : 'text-on-surface'
-                  }`}>.RVT (Revit)</span>
-                <span className={`font-body text-xs ${exportState.format === 'rvt' ? 'text-on-secondary-fixed-variant' : 'text-on-surface-variant'
-                  }`}>Modelo BIM nativo con metadatos preservados. Ideal para integraciones directas.</span>
-              </div>
-              {exportState.format === 'rvt' && (
-                <CheckIcon className="text-primary w-5 h-5 self-center absolute right-4" />
-              )}
-            </label>
-
-            {/* Format Option 2 (.EDB) */}
-            <label
-              onClick={() => handleFormatChange('edb')}
-              className={`cursor-pointer relative flex items-start gap-4 p-4 rounded-lg border transition-all duration-200 ${exportState.format === 'edb'
-                  ? 'bg-primary-fixed border-primary/20 ring-1 ring-primary/10'
-                  : 'bg-surface-container-lowest hover:bg-surface-container border-outline-variant/15'
-                }`}
-            >
-              <div className="pt-1">
-                <input
-                  type="radio"
-                  name="export_format"
-                  checked={exportState.format === 'edb'}
-                  onChange={() => { }}
-                  className="w-4 h-4 text-primary bg-surface-container-lowest border-outline focus:ring-primary focus:ring-2 cursor-pointer"
-                />
-              </div>
-              <div className="flex flex-col flex-1 gap-1">
-                <span className={`font-body text-sm font-bold ${exportState.format === 'edb' ? 'text-on-primary-fixed-variant' : 'text-on-surface'
-                  }`}>.EDB (ETABS)</span>
-                <span className={`font-body text-xs ${exportState.format === 'edb' ? 'text-on-secondary-fixed-variant' : 'text-on-surface-variant'
-                  }`}>Inyección directa por API COM de elementos estructurales y perfiles en ETABS.</span>
-              </div>
-              {exportState.format === 'edb' && (
-                <CheckIcon className="text-primary w-5 h-5 self-center absolute right-4" />
-              )}
-            </label>
-
-            {/* Format Option 3 (.IFC) */}
-            <label
-              onClick={() => handleFormatChange('ifc')}
-              className={`cursor-pointer relative flex items-start gap-4 p-4 rounded-lg border transition-all duration-200 ${exportState.format === 'ifc'
-                  ? 'bg-primary-fixed border-primary/20 ring-1 ring-primary/10'
-                  : 'bg-surface-container-lowest hover:bg-surface-container border-outline-variant/15'
-                }`}
-            >
-              <div className="pt-1">
-                <input
-                  type="radio"
-                  name="export_format"
-                  checked={exportState.format === 'ifc'}
-                  onChange={() => { }}
-                  className="w-4 h-4 text-primary bg-surface-container-lowest border-outline focus:ring-primary focus:ring-2 cursor-pointer"
-                />
-              </div>
-              <div className="flex flex-col flex-1 gap-1">
-                <span className={`font-body text-sm font-bold ${exportState.format === 'ifc' ? 'text-on-primary-fixed-variant' : 'text-on-surface'
-                  }`}>.IFC</span>
-                <span className={`font-body text-xs ${exportState.format === 'ifc' ? 'text-on-secondary-fixed-variant' : 'text-on-surface-variant'
-                  }`}>Estándar abierto para intercambio de modelos BIM.</span>
-              </div>
-              {exportState.format === 'ifc' && (
-                <CheckIcon className="text-primary w-5 h-5 self-center absolute right-4" />
-              )}
-            </label>
+              {/* Format Option 3 (.IFC) */}
+              <label
+                onClick={() => handleFormatChange('ifc')}
+                className={`cursor-pointer relative flex items-start gap-4 p-4 rounded-lg border transition-all duration-200 ${exportState.format === 'ifc'
+                    ? 'bg-primary-fixed border-primary/20 ring-1 ring-primary/10'
+                    : 'bg-surface-container-lowest hover:bg-surface-container border-outline-variant/15'
+                  }`}
+              >
+                <div className="pt-1">
+                  <input
+                    type="radio"
+                    name="export_format"
+                    checked={exportState.format === 'ifc'}
+                    onChange={() => { }}
+                    className="w-4 h-4 text-primary bg-surface-container-lowest border-outline focus:ring-primary focus:ring-2 cursor-pointer"
+                  />
+                </div>
+                <div className="flex flex-col flex-1 gap-1">
+                  <span className={`font-body text-sm font-bold ${exportState.format === 'ifc' ? 'text-on-primary-fixed-variant' : 'text-on-surface'
+                    }`}>.IFC</span>
+                  <span className={`font-body text-xs ${exportState.format === 'ifc' ? 'text-on-secondary-fixed-variant' : 'text-on-surface-variant'
+                    }`}>Estándar abierto para intercambio de modelos BIM.</span>
+                </div>
+                {exportState.format === 'ifc' && (
+                  <CheckIcon className="text-primary w-5 h-5 self-center absolute right-4" />
+                )}
+              </label>
+            </div>
           </div>
         </div>
-
-        {/* Spacer to push final action to bottom */}
-        <div className="flex-1"></div>
 
         {/* Final Action / Download Button */}
-        <div className="pt-4 flex flex-col gap-3">
+        <div className="p-6 bg-surface-container-lowest border-t border-outline-variant/15 flex-shrink-0 flex flex-col gap-3">
           <div className="flex items-center gap-2 px-1 text-tertiary font-body text-xs">
             <InfoIcon className="w-4 h-4 flex-shrink-0" />
             <span>
@@ -430,9 +396,10 @@ export const ExportStep = ({ exportState, setExportState, fileDetails, modelData
         </div>
       </aside>
 
+
       {/* ETABS Integration Status Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[100] flex items-center justify-center p-4 animate-fade-in transition-all">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[100] flex items-center justify-center p-4 animate-fade-in transition-all pointer-events-auto">
           <div className="bg-surface-container-lowest border border-outline-variant/20 rounded-2xl w-full max-w-md p-8 shadow-2xl relative flex flex-col gap-6 scale-up-anim">
             {/* Header / Title */}
             <div className="flex flex-col gap-1.5">

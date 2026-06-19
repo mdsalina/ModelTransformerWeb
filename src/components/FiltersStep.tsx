@@ -1,16 +1,13 @@
 import { useState, useEffect } from 'react';
 import type { Dispatch, SetStateAction, MouseEvent as ReactMouseEvent, TouchEvent as ReactTouchEvent } from 'react';
-import type { FiltersState, FileDetails, JsonModelData } from '../types';
+import type { FiltersState } from '../types';
 import { 
   ExpandMoreIcon
 } from './Icons';
-import { ThreeViewport } from './ThreeViewport';
 
 interface FiltersStepProps {
   filters: FiltersState;
   setFilters: Dispatch<SetStateAction<FiltersState>>;
-  fileDetails: FileDetails | null;
-  modelData: JsonModelData | null;
   thicknessLimits: {
     walls: { min: number; max: number };
     beams: { min: number; max: number };
@@ -18,7 +15,7 @@ interface FiltersStepProps {
   };
 }
 
-export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thicknessLimits }: FiltersStepProps) => {
+export const FiltersStep = ({ filters, setFilters, thicknessLimits }: FiltersStepProps) => {
 
   const handleElementToggle = (key: keyof FiltersState['elements']) => {
     setFilters(prev => ({
@@ -191,10 +188,10 @@ export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thick
   };
 
   return (
-    <main className="flex-1 flex flex-col md:flex-row overflow-hidden relative z-10 md:pt-0 select-none">
+    <main className="flex-1 flex flex-col md:flex-row overflow-hidden relative z-10 select-none pointer-events-none h-full w-full">
       {/* Left Panel: Sidebar / Filters */}
-      <div className="w-full md:w-80 lg:w-96 bg-surface-container-lowest border-r border-surface-container-highest flex flex-col h-full overflow-y-auto">
-        <div className="p-6 lg:p-8 flex-1">
+      <div className="w-full md:w-[360px] flex-shrink-0 bg-background border-r border-outline-variant/15 flex flex-col h-full overflow-hidden pointer-events-auto shadow-[4px_0_24px_rgba(25,27,35,0.02)]">
+        <div className="p-6 lg:p-8 flex-1 overflow-y-auto">
           <header className="mb-8">
             <h1 className="font-headline text-2xl font-extrabold tracking-tight text-on-surface mb-2">Filtros</h1>
             <p className="font-body text-sm text-on-surface-variant">Seleccione los elementos y defina rangos paramétricos.</p>
@@ -239,7 +236,7 @@ export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thick
             {/* Expanders Details */}
             <section className="flex flex-col gap-3">
               {/* Niveles Expandable */}
-              <details className="group bg-surface border border-outline-variant/40 rounded-xl overflow-hidden" open>
+              <details className="group bg-surface border border-outline-variant/40 rounded-xl overflow-hidden">
                 <summary className="font-body text-sm font-semibold text-on-surface p-4 cursor-pointer select-none flex justify-between items-center hover:bg-surface-container-low transition-colors">
                   <span>Niveles</span>
                   <ExpandMoreIcon className="w-5 h-5 text-on-surface-variant transition-transform group-open:rotate-180" />
@@ -573,24 +570,7 @@ export const FiltersStep = ({ filters, setFilters, fileDetails, modelData, thick
       </div>
 
       {/* Right Panel: Context / 3D Preview Container */}
-      <div className="flex-1 bg-surface-dim p-8 relative rounded-tl-2xl overflow-hidden flex flex-col min-h-[350px]">
-        <div className="absolute top-8 left-8 z-10 pointer-events-none">
-          <h2 className="font-headline text-2xl font-bold text-on-surface mb-1">
-            {fileDetails ? fileDetails.name : 'Modelo.json'}
-          </h2>
-          <p className="font-body text-sm text-on-surface-variant">Vista previa geométrica</p>
-        </div>
-
-        {/* Three.js 3D Viewport Area */}
-        <div className="flex-1 relative w-full mt-12" style={{ minHeight: '280px' }}>
-          <ThreeViewport 
-            modelData={modelData}
-            filters={filters}
-            showGrids={filters.elements.grillas}
-            activeStep="filters"
-          />
-        </div>
-      </div>
+      <div className="flex-1 p-8 relative rounded-tl-2xl overflow-hidden flex flex-col min-h-[350px] pointer-events-none" />
     </main>
   );
 };

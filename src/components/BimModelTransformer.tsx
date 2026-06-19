@@ -5,6 +5,7 @@ import { UploadStep } from './UploadStep';
 import { FiltersStep } from './FiltersStep';
 import { ProcessStep } from './ProcessStep';
 import { ExportStep } from './ExportStep';
+import { ThreeViewport } from './ThreeViewport';
 import { ArrowForwardIcon, MenuIcon, CloseIcon } from './Icons';
 
 const DEFAULT_FILTERS: FiltersState = {
@@ -89,8 +90,6 @@ export const BimModelTransformer = () => {
     }
   });
 
-  // State to check if processing is finished (unlocks step 4)
-  const [processingCompleted, setProcessingCompleted] = useState(false);
 
   // Export State
   const [exportState, setExportState] = useState<ExportState>({
@@ -188,25 +187,20 @@ export const BimModelTransformer = () => {
     setModelData(null);
     setFilters(DEFAULT_FILTERS);
     setThicknessLimits(DEFAULT_LIMITS);
-    setProcessingCompleted(false);
     setExportState(prev => ({ ...prev, completed: false }));
   };
 
   const handleProcessCompleted = (updatedModelData: JsonModelData) => {
     setModelData(updatedModelData);
     updateFiltersAndLimitsFromModel(updatedModelData);
-    setProcessingCompleted(true);
   };
 
   // Step access rules
   const isStepUnlocked = (step: Step): boolean => {
     if (step === 'login') return true;
     if (step === 'upload') return true;
-    if (step === 'filters' || step === 'process') {
+    if (step === 'filters' || step === 'process' || step === 'export') {
       return !!fileDetails?.isUploaded;
-    }
-    if (step === 'export') {
-      return processingCompleted;
     }
     return false;
   };
@@ -220,7 +214,7 @@ export const BimModelTransformer = () => {
       return true;
     }
     if (currentStep === 'process') {
-      return processingCompleted;
+      return true;
     }
     return false;
   };
@@ -253,7 +247,7 @@ export const BimModelTransformer = () => {
   return (
     <div className="bg-background text-on-surface min-h-screen flex flex-col antialiased h-screen overflow-hidden">
       {/* Top Navigation Bar */}
-      <nav className="bg-[#faf8ff] flex justify-between items-center w-full px-6 md:px-8 py-4 max-w-full docked full-width border-b border-outline-variant/10 z-50">
+      <nav className="bg-[#faf8ff] flex justify-between items-center w-full px-6 md:px-8 h-[72px] max-w-full docked full-width border-b border-outline-variant/10 z-50">
         <div className="flex items-center gap-8">
           <span className="text-xl font-bold tracking-tight text-[#191b23] font-headline select-none">
             Revit2Etabs
@@ -377,6 +371,27 @@ export const BimModelTransformer = () => {
         {/* Background Tonal Shift Canvas layer */}
         <div className="absolute inset-0 bg-surface-container-low opacity-20 pointer-events-none"></div>
 
+        {/* Persistent 3D Viewport on the right (stacked bottom on mobile) */}
+        {(currentStep === 'filters' || currentStep === 'process' || currentStep === 'export') && (
+          <div className="absolute md:left-[360px] left-0 right-0 md:top-0 top-[40vh] bottom-0 z-0 bg-surface-dim p-8 rounded-tl-2xl overflow-hidden flex flex-col min-h-[350px]">
+            
+            <div className="flex-1 relative w-full mt-0" style={{ minHeight: '280px' }}>
+              <ThreeViewport 
+                modelData={modelData}
+                filters={filters}
+                showGrids={currentStep === 'process' ? true : filters.elements.grillas}
+                activeStep={currentStep}
+                fileName={fileDetails?.name}
+                processTranslation={
+                  currentStep === 'process' && processingParams.processes.moveModel
+                    ? processingParams.processes.moveCoords
+                    : { dx: 0, dy: 0, dz: 0, alpha: 0 }
+                }
+              />
+            </div>
+          </div>
+        )}
+
         {/* Step Component Router */}
         {currentStep === 'upload' && (
           <UploadStep 
@@ -390,8 +405,6 @@ export const BimModelTransformer = () => {
           <FiltersStep 
             filters={filters} 
             setFilters={setFilters} 
-            fileDetails={fileDetails} 
-            modelData={modelData}
             thicknessLimits={thicknessLimits}
           />
         )}
@@ -410,9 +423,7 @@ export const BimModelTransformer = () => {
           <ExportStep 
             exportState={exportState} 
             setExportState={setExportState} 
-            fileDetails={fileDetails} 
             modelData={modelData}
-            filters={filters}
           />
         )}
       </div>

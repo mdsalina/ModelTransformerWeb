@@ -9,6 +9,7 @@ interface ThreeViewportProps {
   showGrids?: boolean;
   activeStep?: 'filters' | 'process' | 'export';
   processTranslation?: { dx: number; dy: number; dz: number; alpha: number };
+  fileName?: string;
 }
 
 // Helper to calculate distance from a point (x, y) to an infinite line defined by grid (p1, p2)
@@ -69,7 +70,8 @@ export const ThreeViewport = ({
   filters,
   showGrids = true,
   activeStep = 'filters',
-  processTranslation = { dx: 0, dy: 0, dz: 0, alpha: 0 }
+  processTranslation = { dx: 0, dy: 0, dz: 0, alpha: 0 },
+  fileName
 }: ThreeViewportProps) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -91,11 +93,13 @@ export const ThreeViewport = ({
   const [renderedCounts, setRenderedCounts] = useState({ walls: 0, beams: 0, slabs: 0 });
   const [errorLog, setErrorLog] = useState<string | null>(null);
 
+  const [polygonCount, setPolygonCount] = useState<number>(0);
+
   // Viewport toggles state
-  const [showGroundGrid, setShowGroundGrid] = useState(true);
-  const [showDebugPanel, setShowDebugPanel] = useState(true);
-  const [enableShadows, setEnableShadows] = useState(true);
-  const [enableTransparency, setEnableTransparency] = useState(false);
+  const [showGroundGrid, setShowGroundGrid] = useState(false);
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
+  const [enableShadows, setEnableShadows] = useState(false);
+  const [enableTransparency, setEnableTransparency] = useState(true);
   
   const [selectedLevelId, setSelectedLevelId] = useState<string>('3d');
   const [selectedGridName, setSelectedGridName] = useState<string>('none');
@@ -170,8 +174,11 @@ export const ThreeViewport = ({
     const orthoCamera = orthoCameraRef.current;
     if (!controls || !persCamera || !orthoCamera) return;
 
-    const hasLevelChanged = selectedLevelId !== prevSelectedLevelIdRef.current;
-    const hasGridChanged = selectedGridName !== prevSelectedGridNameRef.current;
+    const prevLevelId = prevSelectedLevelIdRef.current;
+    const prevGridName = prevSelectedGridNameRef.current;
+
+    const hasLevelChanged = selectedLevelId !== prevLevelId;
+    const hasGridChanged = selectedGridName !== prevGridName;
 
     prevSelectedLevelIdRef.current = selectedLevelId;
     prevSelectedGridNameRef.current = selectedGridName;
@@ -215,9 +222,14 @@ export const ThreeViewport = ({
         // Update controls target immediately so camera looks at the correct height
         controls.target.copy(target);
 
-        // Reset and position Orthographic Camera directly above the level floor plane
-        orthoCamera.zoom = 1;
-        orthoCamera.position.set(target.x, elevation + 100, target.z + 0.001);
+        // Reset zoom only if we transitioned from 3D view
+        if (prevLevelId === '3d') {
+          orthoCamera.zoom = 1;
+          orthoCamera.position.set(target.x, elevation + 100, target.z + 0.001);
+        } else {
+          // Keep current horizontal position and zoom, just update elevation height
+          orthoCamera.position.y = elevation + 100;
+        }
         orthoCamera.lookAt(target);
         orthoCamera.updateProjectionMatrix();
       }
@@ -281,16 +293,18 @@ export const ThreeViewport = ({
 
           controls.target.copy(mid);
 
-          // Configure Orthographic Camera boundaries dynamically
-          if (mountRef.current) {
-            const aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
-            const dynamicFrustumSize = Math.max(length, height) * 1.25;
-            orthoCamera.left = (-dynamicFrustumSize * aspect) / 2;
-            orthoCamera.right = (dynamicFrustumSize * aspect) / 2;
-            orthoCamera.top = dynamicFrustumSize / 2;
-            orthoCamera.bottom = -dynamicFrustumSize / 2;
+          // Configure Orthographic Camera boundaries dynamically ONLY if transitioning from non-elevation
+          if (prevGridName === 'none') {
+            orthoCamera.zoom = 1;
+            if (mountRef.current) {
+              const aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
+              const dynamicFrustumSize = Math.max(length, height) * 1.25;
+              orthoCamera.left = (-dynamicFrustumSize * aspect) / 2;
+              orthoCamera.right = (dynamicFrustumSize * aspect) / 2;
+              orthoCamera.top = dynamicFrustumSize / 2;
+              orthoCamera.bottom = -dynamicFrustumSize / 2;
+            }
           }
-          orthoCamera.zoom = 1;
           orthoCamera.position.copy(cameraPos);
           orthoCamera.lookAt(mid);
           orthoCamera.updateProjectionMatrix();
@@ -382,7 +396,7 @@ export const ThreeViewport = ({
       const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
       dirLight.name = 'main_directional_light';
       dirLight.position.set(80, 120, 50); // Positioned high and to the side for shadows
-      dirLight.castShadow = true;
+      dirLight.castShadow = enableShadows;
       
       // High-resolution shadow mapping settings
       dirLight.shadow.mapSize.width = 2048;
@@ -412,6 +426,7 @@ export const ThreeViewport = ({
       const gridHelper = new THREE.GridHelper(100, 50, 0x004ac6, 0xc3c6d7);
       gridHelper.position.y = -0.01;
       gridHelper.name = 'ground_grid_helper';
+      gridHelper.visible = showGroundGrid;
       scene.add(gridHelper);
       gridHelperRef.current = gridHelper; // Populate ref for gridHelper toggle
 
@@ -577,33 +592,9 @@ export const ThreeViewport = ({
     setErrorLog(null);
 
     try {
-      // Clean up previous elements
-      const toRemove: THREE.Object3D[] = [];
-      scene.traverse((obj: THREE.Object3D) => {
-        if (obj.name === 'bim_model_element') {
-          toRemove.push(obj);
-        }
-      });
-      toRemove.forEach((obj) => {
-        scene.remove(obj);
-        obj.traverse((child: any) => {
-          if (child.geometry) {
-            child.geometry.dispose();
-          }
-          if (child.material) {
-            if (Array.isArray(child.material)) {
-              child.material.forEach((m: any) => m.dispose());
-            } else {
-              child.material.dispose();
-            }
-          }
-        });
-      });
-
-      // Create a group container for current model elements
+      // Create a group container for current model elements (double-buffered)
       const modelGroup = new THREE.Group();
       modelGroup.name = 'bim_model_element';
-      scene.add(modelGroup);
 
 
 
@@ -1165,6 +1156,48 @@ export const ThreeViewport = ({
         }
       }
 
+      // Clean up previous elements synchronously just before adding the new one (double buffering)
+      const toRemove: THREE.Object3D[] = [];
+      scene.traverse((obj: THREE.Object3D) => {
+        if (obj.name === 'bim_model_element') {
+          toRemove.push(obj);
+        }
+      });
+      toRemove.forEach((obj) => {
+        scene.remove(obj);
+        obj.traverse((child: any) => {
+          if (child.geometry) {
+            child.geometry.dispose();
+          }
+          if (child.material) {
+            if (Array.isArray(child.material)) {
+              child.material.forEach((m: any) => m.dispose());
+            } else {
+              child.material.dispose();
+            }
+          }
+        });
+      });
+
+      // Add the new model group to the scene
+      scene.add(modelGroup);
+
+      // Count polygons in modelGroup
+      let polys = 0;
+      modelGroup.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          const geom = obj.geometry;
+          if (geom) {
+            if (geom.index) {
+              polys += geom.index.count / 3;
+            } else if (geom.attributes.position) {
+              polys += geom.attributes.position.count / 3;
+            }
+          }
+        }
+      });
+      setPolygonCount(Math.round(polys));
+
       setRenderedCounts({ walls: wallsCount, beams: beamsCount, slabs: slabsCount });
     } catch (err: any) {
       console.error('Geometry update error:', err);
@@ -1172,14 +1205,149 @@ export const ThreeViewport = ({
     }
   }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation?.dx, processTranslation?.dy, processTranslation?.dz, processTranslation?.alpha, selectedLevelId, selectedGridName, enableTransparency, selectedElement]);
 
+  const resetZoomAndFrame = () => {
+    console.log('[resetZoomAndFrame] Triggered. selectedLevelId:', selectedLevelId, 'selectedGridName:', selectedGridName);
+    const scene = sceneRef.current;
+    if (!scene) {
+      console.warn('[resetZoomAndFrame] Early return: scene is null');
+      return;
+    }
+
+    let modelGroup: THREE.Object3D | undefined;
+    scene.traverse((obj) => {
+      if (obj.name === 'bim_model_element') {
+        modelGroup = obj;
+      }
+    });
+
+    const camera = cameraRef.current;
+    const orthoCamera = orthoCameraRef.current;
+    const controls = controlsRef.current;
+
+    if (!controls) {
+      console.warn('[resetZoomAndFrame] Early return: controls is null');
+      return;
+    }
+
+    // Pre-calculate bbox ONLY if modelGroup exists and has children
+    let center = new THREE.Vector3(0, 0, 0);
+    let maxDim = 40; // fallback default
+    if (modelGroup && modelGroup.children.length > 0) {
+      const bbox = new THREE.Box3().setFromObject(modelGroup);
+      bbox.getCenter(center);
+      const size = bbox.getSize(new THREE.Vector3());
+      maxDim = Math.max(size.x, size.y, size.z);
+      console.log('[resetZoomAndFrame] Calculated bbox center:', center, 'maxDim:', maxDim);
+    } else {
+      console.log('[resetZoomAndFrame] modelGroup is empty or not found, using fallbacks');
+    }
+
+    if (selectedLevelId === '3d' && selectedGridName === 'none') {
+      console.log('[resetZoomAndFrame] Entering 3D Perspective branch');
+      if (camera && maxDim > 0) {
+        controls.target.copy(center);
+        const fov = camera.fov * (Math.PI / 180);
+        let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+        cameraZ *= 1.5;
+        camera.position.set(center.x + cameraZ * 0.8, center.y + cameraZ * 0.6, center.z + cameraZ * 0.8);
+        camera.lookAt(center);
+        controls.update();
+        console.log('[resetZoomAndFrame] 3D reset done. Camera pos:', camera.position, 'controls target:', controls.target);
+      }
+    } else if (selectedGridName !== 'none' && modelData && modelData.grids) {
+      console.log('[resetZoomAndFrame] Entering Grid Elevation branch for grid:', selectedGridName);
+      const grid = modelData.grids.find(g => g.name === selectedGridName);
+      if (grid && orthoCamera && mountRef.current) {
+        const tx = activeStep === 'process' ? processTranslation.dx : 0;
+        const ty = activeStep === 'process' ? processTranslation.dy : 0;
+        const tz = activeStep === 'process' ? processTranslation.dz : 0;
+        const rotAlpha = activeStep === 'process' ? (processTranslation.alpha * Math.PI) / 180 : 0;
+
+        const convertCoords = (x: number, y: number, z: number): THREE.Vector3 => {
+          let rx = x;
+          let ry = y;
+          if (rotAlpha !== 0) {
+            rx = x * Math.cos(rotAlpha) - y * Math.sin(rotAlpha);
+            ry = x * Math.sin(rotAlpha) + y * Math.cos(rotAlpha);
+          }
+          return new THREE.Vector3(rx + tx, z + tz, -ry - ty);
+        };
+
+        const elevations = modelData.levels.map(l => l.elevation);
+        const minElevation = Math.min(...elevations, 0);
+        const maxElevation = Math.max(...elevations, 10);
+        const height = maxElevation - minElevation;
+        const midElevation = (minElevation + maxElevation) / 2;
+
+        const p1 = convertCoords(grid.p1[0], grid.p1[1], midElevation);
+        const p2 = convertCoords(grid.p2[0], grid.p2[1], midElevation);
+        const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+        const length = p1.distanceTo(p2);
+
+        const dir = new THREE.Vector3().subVectors(p2, p1);
+        dir.y = 0;
+        dir.normalize();
+        const normal = new THREE.Vector3(-dir.z, 0, dir.x);
+
+        const distance = Math.max(length, height) * 2;
+        const cameraPos = new THREE.Vector3().copy(mid).addScaledVector(normal, distance);
+
+        console.log('[resetZoomAndFrame] Grid coords: length:', length, 'height:', height, 'distance:', distance);
+        console.log('[resetZoomAndFrame] Setting target to:', mid, 'cameraPos to:', cameraPos);
+
+        controls.target.copy(mid);
+        orthoCamera.zoom = 1;
+        orthoCamera.position.copy(cameraPos);
+        orthoCamera.lookAt(mid);
+
+        const aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
+        const dynamicFrustumSize = Math.max(length, height) * 1.25;
+        orthoCamera.left = (-dynamicFrustumSize * aspect) / 2;
+        orthoCamera.right = (dynamicFrustumSize * aspect) / 2;
+        orthoCamera.top = dynamicFrustumSize / 2;
+        orthoCamera.bottom = -dynamicFrustumSize / 2;
+        orthoCamera.updateProjectionMatrix();
+        controls.update();
+        console.log('[resetZoomAndFrame] Grid reset done. Camera pos:', orthoCamera.position, 'controls target:', controls.target, 'zoom:', orthoCamera.zoom);
+      } else {
+        console.warn('[resetZoomAndFrame] Grid, orthoCamera or mountRef is null. grid:', !!grid, 'orthoCamera:', !!orthoCamera);
+      }
+    } else if (selectedLevelId !== '3d' && modelData) {
+      console.log('[resetZoomAndFrame] Entering Floor Plan branch. levelId:', selectedLevelId);
+      if (orthoCamera && mountRef.current) {
+        const currentLevel = modelData.levels.find(l => l.id === selectedLevelId);
+        const elevation = currentLevel ? currentLevel.elevation : 0;
+
+        // Position camera directly above the center of the model at the level height
+        controls.target.set(center.x, elevation, center.z);
+        orthoCamera.zoom = 1;
+        orthoCamera.position.set(center.x, elevation + 100, center.z + 0.001);
+        orthoCamera.lookAt(controls.target);
+
+        // Adjust bounds to fit
+        const aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
+        const dynamicFrustumSize = maxDim * 1.5;
+        orthoCamera.left = (-dynamicFrustumSize * aspect) / 2;
+        orthoCamera.right = (dynamicFrustumSize * aspect) / 2;
+        orthoCamera.top = dynamicFrustumSize / 2;
+        orthoCamera.bottom = -dynamicFrustumSize / 2;
+        orthoCamera.updateProjectionMatrix();
+        controls.update();
+        console.log('[resetZoomAndFrame] Floor Plan reset done. Camera pos:', orthoCamera.position, 'controls target:', controls.target, 'zoom:', orthoCamera.zoom);
+      }
+    }
+  };
+
   const handleGoUp = () => {
     if (!sortedLevels.length) return;
     if (selectedLevelId === '3d') {
-      setSelectedLevelId(sortedLevels[0].id);
+      handleLevelChange(sortedLevels[0].id);
     } else {
       const idx = sortedLevels.findIndex((l) => l.id === selectedLevelId);
-      if (idx < sortedLevels.length - 1) {
-        setSelectedLevelId(sortedLevels[idx + 1].id);
+      if (idx === sortedLevels.length - 1) {
+        handleLevelChange(sortedLevels[0].id); // loop back to the lowest level
+      } else {
+        handleLevelChange(sortedLevels[idx + 1].id);
       }
     }
   };
@@ -1187,17 +1355,19 @@ export const ThreeViewport = ({
   const handleGoDown = () => {
     if (!sortedLevels.length) return;
     if (selectedLevelId === '3d') {
-      setSelectedLevelId(sortedLevels[sortedLevels.length - 1].id);
+      handleLevelChange(sortedLevels[sortedLevels.length - 1].id);
     } else {
       const idx = sortedLevels.findIndex((l) => l.id === selectedLevelId);
-      if (idx > 0) {
-        setSelectedLevelId(sortedLevels[idx - 1].id);
+      if (idx === 0) {
+        handleLevelChange(sortedLevels[sortedLevels.length - 1].id); // loop to the highest level
+      } else {
+        handleLevelChange(sortedLevels[idx - 1].id);
       }
     }
   };
 
-  const isUpDisabled = sortedLevels.length > 0 && selectedLevelId === sortedLevels[sortedLevels.length - 1].id;
-  const isDownDisabled = sortedLevels.length > 0 && selectedLevelId === sortedLevels[0].id;
+  const isUpDisabled = sortedLevels.length === 0;
+  const isDownDisabled = sortedLevels.length === 0;
 
   // Grid navigation handlers
   const handleGridGoUp = () => {
@@ -1206,7 +1376,9 @@ export const ThreeViewport = ({
       handleGridChange(sortedGrids[0].name);
     } else {
       const idx = sortedGrids.findIndex((g) => g.name === selectedGridName);
-      if (idx < sortedGrids.length - 1) {
+      if (idx === sortedGrids.length - 1) {
+        handleGridChange(sortedGrids[0].name); // loop back to the first grid
+      } else {
         handleGridChange(sortedGrids[idx + 1].name);
       }
     }
@@ -1218,14 +1390,16 @@ export const ThreeViewport = ({
       handleGridChange(sortedGrids[sortedGrids.length - 1].name);
     } else {
       const idx = sortedGrids.findIndex((g) => g.name === selectedGridName);
-      if (idx > 0) {
+      if (idx === 0) {
+        handleGridChange(sortedGrids[sortedGrids.length - 1].name); // loop back to the last grid
+      } else {
         handleGridChange(sortedGrids[idx - 1].name);
       }
     }
   };
 
-  const isGridUpDisabled = sortedGrids.length > 0 && selectedGridName === sortedGrids[sortedGrids.length - 1].name;
-  const isGridDownDisabled = sortedGrids.length > 0 && selectedGridName === sortedGrids[0].name;
+  const isGridUpDisabled = sortedGrids.length === 0;
+  const isGridDownDisabled = sortedGrids.length === 0;
 
   const handleFaceClick = (face: string) => {
     // Switch to Vista 3D first when clicking ViewCube to restore 3D rotation and elements
@@ -1263,12 +1437,35 @@ export const ThreeViewport = ({
       default:
         return;
     }
-    
     targetCameraPosition.current = targetPos;
   };
 
+  const formatProjectName = (name?: string) => {
+    if (!name) return 'Modelo';
+    const lastDotIndex = name.lastIndexOf('.');
+    if (lastDotIndex === -1) return name;
+    return name.substring(0, lastDotIndex);
+  };
+
+  let viewSubtitle = "Visualización 3D";
+  if (selectedLevelId !== '3d' && modelData) {
+    const lvl = modelData.levels.find(l => l.id === selectedLevelId);
+    viewSubtitle = `Vista en planta ${lvl ? lvl.name : ''}`;
+  } else if (selectedGridName !== 'none' && modelData) {
+    const hasEje = selectedGridName.toLowerCase().startsWith('eje');
+    viewSubtitle = `Vista elevación ${hasEje ? '' : 'eje '}${selectedGridName}`;
+  }
+
   return (
     <div ref={mountRef} className="absolute inset-0 w-full h-full rounded-xl overflow-hidden">
+      
+      {/* Project Title and Dynamic Subtitle */}
+      <div className="absolute top-4 left-4 z-10 pointer-events-none select-none">
+        <h2 className="font-headline text-2xl font-bold text-on-surface mb-1">
+          {formatProjectName(fileName)}
+        </h2>
+        <p className="font-body text-sm text-on-surface-variant">{viewSubtitle}</p>
+      </div>
       
       {/* Styles for Navigation Cube & Options Column */}
       <style dangerouslySetInnerHTML={{__html: `
@@ -1604,6 +1801,17 @@ export const ThreeViewport = ({
             <path strokeLinecap="round" strokeLinejoin="round" d="M14.25 9.75L16.5 12l-2.25 2.25m-4.5 0L7.5 12l2.25-2.25M6 20.25h12A2.25 2.25 0 0020.25 18V6A2.25 2.25 0 0018 3.75H6A2.25 2.25 0 003.75 6v12A2.25 2.25 0 006 20.25z" />
           </svg>
         </button>
+
+        {/* Reset Zoom & Fit */}
+        <button 
+          onClick={resetZoomAndFrame}
+          className="option-btn"
+          title="Reajustar zoom y encuadrar"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M20.25 3.75v4.5m0-4.5h-4.5m4.5 0L15 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15m11.25 5.25v-4.5m0 4.5h-4.5m4.5 0L15 15" />
+          </svg>
+        </button>
       </div>
 
       {/* Floating Debug Panel */}
@@ -1619,6 +1827,7 @@ export const ThreeViewport = ({
               <div>Total Slabs: {modelData.elements.slabs?.length || 0} (Rendered: {renderedCounts.slabs})</div>
               <div>Grids: {modelData.grids?.length || 0} (Visible: {showGrids && filters.elements.grillas ? 'Yes' : 'No'})</div>
               <div>Checked Levels: {filters.levels.filter(l => l.checked).length} / {filters.levels.length}</div>
+              <div>Polygons: {polygonCount.toLocaleString()}</div>
             </>
           )}
           {selectedElement && (

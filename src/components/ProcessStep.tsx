@@ -8,7 +8,6 @@ import {
   SyncIcon, 
   CheckCircleIcon
 } from './Icons';
-import { ThreeViewport } from './ThreeViewport';
 
 interface ProcessStepProps {
   params: ProcessingParams;
@@ -217,10 +216,10 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, modelData, 
   };
 
   return (
-    <div className="flex flex-1 overflow-hidden relative bg-surface-container-low select-none">
+    <div className="flex flex-1 overflow-hidden relative select-none pointer-events-none h-full w-full">
       {/* Left Side Panel: Processing Parameters */}
-      <aside className="w-[360px] bg-background h-full overflow-y-auto flex flex-col shadow-[4px_0_24px_rgba(25,27,35,0.02)] relative z-10 border-r border-outline-variant/15">
-        <div className="p-6 flex flex-col gap-6">
+      <aside className="w-full md:w-[360px] flex-shrink-0 bg-background h-full flex flex-col shadow-[4px_0_24px_rgba(25,27,35,0.02)] relative z-10 border-r border-outline-variant/15 pointer-events-auto overflow-hidden">
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
           <div>
             <h2 className="font-headline text-lg font-bold text-on-surface mb-1">Parámetros de Procesamiento</h2>
             <p className="font-body text-sm text-on-surface-variant">Configura las reglas geométricas y estructuración.</p>
@@ -528,7 +527,7 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, modelData, 
         </div>
 
         {/* Sidebar Footer Execution Button */}
-        <div className="mt-auto p-6 bg-surface-container-low border-t border-outline-variant/15">
+        <div className="p-6 bg-surface-container-low border-t border-outline-variant/15 flex-shrink-0">
           <button 
             onClick={runProcessing}
             disabled={isProcessing}
@@ -546,29 +545,13 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, modelData, 
         </div>
       </aside>
 
-      {/* Right Main Content Area: 3D Preview */}
-      <main className="flex-1 flex flex-col p-6 overflow-hidden min-h-[350px]">
-        {/* 3D Preview Container */}
-        <div className="flex-1 bg-surface-dim rounded-xl relative overflow-hidden flex items-center justify-center border border-outline-variant/20 shadow-inner">
-          
-          {/* Three.js 3D Viewport Area */}
-          <div className="absolute inset-0 w-full h-full">
-            <ThreeViewport 
-              modelData={modelData}
-              filters={filters}
-              showGrids={true}
-              activeStep="process"
-              processTranslation={
-                params.processes.moveModel 
-                  ? params.processes.moveCoords 
-                  : { dx: 0, dy: 0, dz: 0, alpha: 0 }
-              }
-            />
-          </div>
-
+      {/* Right Main Content Area: 3D Preview (Transparent Overlay) */}
+      <main className="flex-1 flex flex-col p-6 overflow-hidden min-h-[350px] pointer-events-none">
+        {/* 3D Preview Container Overlay */}
+        <div className="flex-1 relative overflow-hidden flex items-center justify-center pointer-events-none">
           {/* Processing / Success Modal Overlay */}
           {(isProcessing || showSuccessModal) && (
-            <div className="absolute inset-0 bg-background/40 backdrop-blur-[2px] flex flex-col items-center justify-center z-15">
+            <div className="absolute inset-0 bg-background/40 backdrop-blur-[2px] flex flex-col items-center justify-center z-15 pointer-events-auto">
               <div className={`bg-surface p-6 rounded-xl border border-outline-variant/20 shadow-xl flex flex-col items-center gap-4 max-w-[320px] text-center ${isProcessing ? 'animate-bounce' : 'animate-fade-in'}`}>
                 {isProcessing ? (
                   <>
@@ -593,7 +576,7 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, modelData, 
 
           {/* Error Toast */}
           {errorMessage && (
-            <div className="absolute bottom-6 right-6 bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 px-5 py-3 rounded-lg flex flex-col gap-2 shadow-[0_8px_32px_rgba(25,27,35,0.08)] border border-red-500/20 animate-fade-in z-25 max-w-[320px]">
+            <div className="absolute bottom-6 right-6 bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 px-5 py-3 rounded-lg flex flex-col gap-2 shadow-[0_8px_32px_rgba(25,27,35,0.08)] border border-red-500/20 animate-fade-in z-25 max-w-[320px] pointer-events-auto">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-body text-sm font-bold">Error de Procesamiento</span>
                 <button onClick={() => setErrorMessage(null)} className="text-xs hover:underline text-red-500 font-semibold cursor-pointer">Cerrar</button>
