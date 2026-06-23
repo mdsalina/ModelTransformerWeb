@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { JsonModelData, FiltersState } from '../types';
@@ -10,6 +11,8 @@ interface ThreeViewportProps {
   activeStep?: 'filters' | 'process' | 'export';
   processTranslation?: { dx: number; dy: number; dz: number; alpha: number };
   fileName?: string;
+  hiddenElementIds: Set<string>;
+  setHiddenElementIds: Dispatch<SetStateAction<Set<string>>>;
 }
 
 // Helper to calculate distance from a point (x, y) to an infinite line defined by grid (p1, p2)
@@ -71,7 +74,9 @@ export const ThreeViewport = ({
   showGrids = true,
   activeStep = 'filters',
   processTranslation = { dx: 0, dy: 0, dz: 0, alpha: 0 },
-  fileName
+  fileName,
+  hiddenElementIds,
+  setHiddenElementIds
 }: ThreeViewportProps) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -103,7 +108,42 @@ export const ThreeViewport = ({
   
   const [selectedLevelId, setSelectedLevelId] = useState<string>('3d');
   const [selectedGridName, setSelectedGridName] = useState<string>('none');
-  const [selectedElement, setSelectedElement] = useState<{ id: string; type: 'wall' | 'beam' | 'slab'; data: any } | null>(null);
+  const [selectedElements, setSelectedElements] = useState<{ id: string; type: 'wall' | 'beam' | 'slab'; data: any }[]>([]);
+  const selectedElement = selectedElements[selectedElements.length - 1] || null;
+  const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null);
+  const [optionPalette, setOptionPalette] = useState<{ x: number; y: number; visible: boolean; elementId: string } | null>(null);
+
+  // Visualization settings
+  const [gridToleranceMeters, setGridToleranceMeters] = useState<number>(0.10);
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [tempGridTolerance, setTempGridTolerance] = useState<number>(0.10);
+  const [visualizationMode, setVisualizationMode] = useState<string>('espesores');
+  const [tempVisualizationMode, setTempVisualizationMode] = useState<string>('espesores');
+
+  const getFormattedTolerance = (valueInMeters: number): string => {
+    if (!modelData || !modelData.project_info?.unit_system) {
+      return `${valueInMeters.toFixed(3)} m (${(valueInMeters * 100).toFixed(1)} cm)`;
+    }
+    const unit = modelData.project_info.unit_system.toLowerCase();
+    if (unit === 'cm') {
+      return `${(valueInMeters * 100).toFixed(1)} cm (${valueInMeters.toFixed(3)} m)`;
+    }
+    if (unit === 'mm') {
+      return `${(valueInMeters * 1000).toFixed(0)} mm (${valueInMeters.toFixed(3)} m)`;
+    }
+    if (unit === 'ft' || unit === 'foot' || unit === 'feet') {
+      return `${(valueInMeters / 0.3048).toFixed(3)} ft (${valueInMeters.toFixed(3)} m)`;
+    }
+    if (unit === 'in' || unit === 'inch' || unit === 'inches') {
+      return `${(valueInMeters / 0.0254).toFixed(2)} in (${valueInMeters.toFixed(3)} m)`;
+    }
+    return `${valueInMeters.toFixed(3)} m (${(valueInMeters * 100).toFixed(1)} cm)`;
+  };
+
+  const hiddenElementIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    hiddenElementIdsRef.current = hiddenElementIds;
+  }, [hiddenElementIds]);
 
   // Ref to avoid stale closures in the single-instance animation loop
   const selectedLevelIdRef = useRef<string>('3d');
@@ -150,7 +190,9 @@ export const ThreeViewport = ({
     hasFitCameraRef.current = false;
     setSelectedLevelId('3d');
     setSelectedGridName('none');
-    setSelectedElement(null);
+    setSelectedElements([]);
+    setOptionPalette(null);
+    setHiddenElementIds(new Set());
   }, [modelData]);
 
   // Sync ground grid visibility directly using ref
@@ -191,9 +233,9 @@ export const ThreeViewport = ({
       // Re-enable rotation
       controls.enableRotate = true;
       controls.mouseButtons = {
-        LEFT: THREE.MOUSE.ROTATE,
-        MIDDLE: THREE.MOUSE.DOLLY,
-        RIGHT: THREE.MOUSE.PAN
+        LEFT: undefined as any,
+        MIDDLE: THREE.MOUSE.PAN,
+        RIGHT: THREE.MOUSE.ROTATE
       };
       
       persCamera.updateProjectionMatrix();
@@ -206,9 +248,9 @@ export const ThreeViewport = ({
       // Disable rotation for 2D plan view
       controls.enableRotate = false;
       controls.mouseButtons = {
-        LEFT: THREE.MOUSE.PAN,
-        MIDDLE: THREE.MOUSE.DOLLY,
-        RIGHT: THREE.MOUSE.PAN
+        LEFT: undefined as any,
+        MIDDLE: THREE.MOUSE.PAN,
+        RIGHT: THREE.MOUSE.ROTATE
       };
 
       if (hasLevelChanged) {
@@ -246,9 +288,9 @@ export const ThreeViewport = ({
         // Disable rotation for 2D elevation view
         controls.enableRotate = false;
         controls.mouseButtons = {
-          LEFT: THREE.MOUSE.PAN,
-          MIDDLE: THREE.MOUSE.DOLLY,
-          RIGHT: THREE.MOUSE.PAN
+          LEFT: undefined as any,
+          MIDDLE: THREE.MOUSE.PAN,
+          RIGHT: THREE.MOUSE.ROTATE
         };
 
         if (hasGridChanged) {
@@ -325,6 +367,8 @@ export const ThreeViewport = ({
     let renderer: THREE.WebGLRenderer | null = null;
     let onPointerDown: ((event: PointerEvent) => void) | null = null;
     let onPointerUp: ((event: PointerEvent) => void) | null = null;
+    let onPointerDownCapture: ((event: PointerEvent) => void) | null = null;
+    let onPointerMove: ((event: PointerEvent) => void) | null = null;
 
     try {
       // 1. Create Scene
@@ -382,6 +426,11 @@ export const ThreeViewport = ({
       controls = new OrbitControls(activeCamera, renderer.domElement);
       controls.enableDamping = false; // Disable damping/inertia as requested by the user
       controls.maxPolarAngle = Math.PI / 2 + 0.1; // don't go too far below ground
+      controls.mouseButtons = {
+        LEFT: undefined as any,
+        MIDDLE: THREE.MOUSE.PAN,
+        RIGHT: THREE.MOUSE.ROTATE
+      };
       controlsRef.current = controls;
 
       // Cancel camera transition on user interaction (resolves "elastic band" lock-up)
@@ -503,20 +552,69 @@ export const ThreeViewport = ({
 
       let pointerDownX = 0;
       let pointerDownY = 0;
+      let isSelecting = false;
+
+      // Capturing pointerdown handler to configure OrbitControls mouse buttons dynamically
+      onPointerDownCapture = (event: PointerEvent) => {
+        if (!controls) return;
+        if (event.shiftKey) {
+          controls.mouseButtons = {
+            LEFT: THREE.MOUSE.ROTATE,
+            MIDDLE: THREE.MOUSE.ROTATE,
+            RIGHT: THREE.MOUSE.ROTATE
+          };
+        } else {
+          controls.mouseButtons = {
+            LEFT: undefined as any,
+            MIDDLE: THREE.MOUSE.PAN,
+            RIGHT: THREE.MOUSE.ROTATE
+          };
+        }
+      };
 
       onPointerDown = (event: PointerEvent) => {
         pointerDownX = event.clientX;
         pointerDownY = event.clientY;
+        
+        // Only start selection if it's Left click (button 0) AND shift is NOT pressed
+        if (event.button === 0 && !event.shiftKey) {
+          isSelecting = true;
+          setSelectionBox({
+            startX: event.clientX,
+            startY: event.clientY,
+            currentX: event.clientX,
+            currentY: event.clientY
+          });
+          setOptionPalette(null);
+        } else {
+          isSelecting = false;
+        }
+      };
+
+      onPointerMove = (event: PointerEvent) => {
+        if (isSelecting) {
+          setSelectionBox(prev => prev ? {
+            ...prev,
+            currentX: event.clientX,
+            currentY: event.clientY
+          } : null);
+        }
       };
 
       onPointerUp = (event: PointerEvent) => {
+        if (!isSelecting) return;
+        isSelecting = false;
+        setSelectionBox(null);
+
         const diffX = Math.abs(event.clientX - pointerDownX);
         const diffY = Math.abs(event.clientY - pointerDownY);
-        if (diffX < 3 && diffY < 3) {
-          const activeCamera = activeCameraRef.current;
-          if (!renderer || !scene || !activeCamera) return;
 
-          const rect = renderer.domElement.getBoundingClientRect();
+        const activeCamera = activeCameraRef.current;
+        if (!renderer || !scene || !activeCamera) return;
+        const rect = renderer.domElement.getBoundingClientRect();
+
+        if (diffX < 5 && diffY < 5) {
+          // Single Click selection
           const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
           const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
@@ -529,7 +627,7 @@ export const ThreeViewport = ({
           for (const intersect of intersects) {
             let current: THREE.Object3D | null = intersect.object;
             while (current) {
-              if (current.userData && current.userData.id) {
+              if (current.userData && current.userData.id && !hiddenElementIdsRef.current.has(current.userData.id)) {
                 hitObject = current;
                 break;
               }
@@ -540,14 +638,102 @@ export const ThreeViewport = ({
 
           if (hitObject) {
             const { id, type, data } = hitObject.userData;
-            setSelectedElement({ id, type, data });
+            setSelectedElements([{ id, type, data }]);
+            setOptionPalette({
+              visible: true,
+              x: event.clientX,
+              y: event.clientY,
+              elementId: id
+            });
           } else {
-            setSelectedElement(null);
+            setSelectedElements([]);
+            setOptionPalette(null);
           }
+        } else {
+          // Box Selection
+          const xMin = Math.min(pointerDownX, event.clientX);
+          const xMax = Math.max(pointerDownX, event.clientX);
+          const yMin = Math.min(pointerDownY, event.clientY);
+          const yMax = Math.max(pointerDownY, event.clientY);
+
+          const isLeftToRight = pointerDownX <= event.clientX;
+
+          const found: { id: string; type: 'wall' | 'beam' | 'slab'; data: any }[] = [];
+
+          scene.traverse((obj) => {
+            if (
+              obj.userData &&
+              obj.userData.id &&
+              (obj.userData.type === 'wall' || obj.userData.type === 'beam' || obj.userData.type === 'slab') &&
+              !hiddenElementIdsRef.current.has(obj.userData.id)
+            ) {
+              const box = new THREE.Box3().setFromObject(obj);
+              const min = box.min;
+              const max = box.max;
+              const corners = [
+                new THREE.Vector3(min.x, min.y, min.z),
+                new THREE.Vector3(min.x, min.y, max.z),
+                new THREE.Vector3(min.x, max.y, min.z),
+                new THREE.Vector3(min.x, max.y, max.z),
+                new THREE.Vector3(max.x, min.y, min.z),
+                new THREE.Vector3(max.x, min.y, max.z),
+                new THREE.Vector3(max.x, max.y, min.z),
+                new THREE.Vector3(max.x, max.y, max.z)
+              ];
+
+              const projectedCorners = corners.map((corner) => {
+                const tempV = corner.clone().project(activeCamera);
+                const px = ((tempV.x + 1) / 2) * rect.width + rect.left;
+                const py = ((1 - tempV.y) / 2) * rect.height + rect.top;
+                const pz = tempV.z;
+                return { x: px, y: py, z: pz };
+              });
+
+              // Check if in front of camera
+              const inFront = projectedCorners.some(c => c.z >= -1 && c.z <= 1);
+              if (!inFront) return;
+
+              const xs = projectedCorners.map(c => c.x);
+              const ys = projectedCorners.map(c => c.y);
+              const objXMin = Math.min(...xs);
+              const objXMax = Math.max(...xs);
+              const objYMin = Math.min(...ys);
+              const objYMax = Math.max(...ys);
+
+              if (isLeftToRight) {
+                // Window Selection: all corners must be inside selection box
+                const allInside = projectedCorners.every(
+                  c => c.x >= xMin && c.x <= xMax && c.y >= yMin && c.y <= yMax
+                );
+                if (allInside) {
+                  found.push({
+                    id: obj.userData.id,
+                    type: obj.userData.type,
+                    data: obj.userData.data
+                  });
+                }
+              } else {
+                // Crossing Selection: overlap
+                const overlap = !(objXMax < xMin || objXMin > xMax || objYMax < yMin || objYMin > yMax);
+                if (overlap) {
+                  found.push({
+                    id: obj.userData.id,
+                    type: obj.userData.type,
+                    data: obj.userData.data
+                  });
+                }
+              }
+            }
+          });
+
+          setSelectedElements(found);
+          setOptionPalette(null);
         }
       };
 
+      renderer.domElement.addEventListener('pointerdown', onPointerDownCapture, true);
       renderer.domElement.addEventListener('pointerdown', onPointerDown);
+      renderer.domElement.addEventListener('pointermove', onPointerMove);
       renderer.domElement.addEventListener('pointerup', onPointerUp);
 
     } catch (e: any) {
@@ -566,7 +752,9 @@ export const ThreeViewport = ({
       
       if (renderer && renderer.domElement) {
         // Remove event listeners
+        if (onPointerDownCapture) renderer.domElement.removeEventListener('pointerdown', onPointerDownCapture, true);
         if (onPointerDown) renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+        if (onPointerMove) renderer.domElement.removeEventListener('pointermove', onPointerMove);
         if (onPointerUp) renderer.domElement.removeEventListener('pointerup', onPointerUp);
       }
 
@@ -590,6 +778,8 @@ export const ThreeViewport = ({
     let beamsCount = 0;
     let slabsCount = 0;
     setErrorLog(null);
+
+    const selectedIdsSet = new Set(selectedElements.map((el) => el.id));
 
     try {
       // Create a group container for current model elements (double-buffered)
@@ -620,23 +810,96 @@ export const ThreeViewport = ({
           return new THREE.Vector3(rx + tx, z + tz, -ry - ty);
         };
 
+        // Get all unique material names from sections to check if they are all equal
+        const uniqueMaterials = Array.from(new Set(
+          modelData.sections.map(s => s.material || 'unknown')
+        )).filter(m => m !== 'unknown');
+
+        const materialColorsList = [
+          '#4f46e5', // Indigo
+          '#10b981', // Emerald
+          '#f59e0b', // Amber
+          '#ef4444', // Rose
+          '#06b6d4', // Cyan
+          '#8b5cf6', // Violet
+          '#ec4899', // Pink
+          '#14b8a6', // Teal
+        ];
+
+        const getMaterialColor = (matName: string, elementType: 'wall' | 'beam' | 'slab'): string => {
+          if (uniqueMaterials.length <= 1) {
+            if (elementType === 'wall') return '#94a3b8';
+            if (elementType === 'beam') return '#64748b';
+            return '#cbd5e1';
+          }
+          const index = uniqueMaterials.indexOf(matName);
+          if (index <= 0) {
+            if (elementType === 'wall') return '#94a3b8';
+            if (elementType === 'beam') return '#64748b';
+            return '#cbd5e1';
+          }
+          return materialColorsList[(index - 1) % materialColorsList.length];
+        };
+
+        const getEspesoresColor = (thicknessMeters: number): string => {
+          const mm = Math.round(thicknessMeters * 1000);
+          if (mm === 150) return '#DFDFDF';
+          if (mm === 200) return '#0080C0';
+          if (mm === 250) return '#00FF00';
+          if (mm === 300) return '#FF8000';
+          if (mm === 350) return '#8080FF';
+          if (mm === 400) return '#FF80FF';
+          return '#800040';
+        };
+
+        const getElementColor = (
+          elementType: 'wall' | 'beam' | 'slab',
+          sectionCodeName: string
+        ): string => {
+          const sec = modelData.sections.find(s => s.code_name === sectionCodeName);
+          
+          if (visualizationMode === 'espesores') {
+            let thickness = 0.2; // default
+            if (sec) {
+              if (elementType === 'wall') {
+                thickness = sec.parameters.thickness ?? 0.2;
+              } else if (elementType === 'slab') {
+                thickness = sec.parameters.thickness ?? 0.15;
+              } else if (elementType === 'beam') {
+                thickness = sec.parameters.width ?? 0.2;
+              }
+            }
+            return getEspesoresColor(thickness);
+          }
+          
+          if (visualizationMode === 'tipo') {
+            if (elementType === 'wall') return '#8F2C38';
+            if (elementType === 'beam') return '#ECB613';
+            return '#cbd5e1'; // default slab grey
+          }
+          
+          // default visualizationMode === 'material'
+          const matName = sec?.material || 'unknown';
+          return getMaterialColor(matName, elementType);
+        };
+
         // Find the selected grid
         const selectedGrid = selectedGridName !== 'none' && modelData.grids
           ? modelData.grids.find(g => g.name === selectedGridName)
           : null;
 
-        // Calculate grid tolerance based on the project's unit system (defaulting to 0.02 if unit_system is 'm')
-        let gridTolerance = 0.02;
+        // Calculate grid tolerance based on the project's unit system (defaulting to gridToleranceMeters if unit_system is 'm')
+        let gridTolerance = gridToleranceMeters;
         if (modelData.project_info?.unit_system) {
           const unit = modelData.project_info.unit_system.toLowerCase();
           if (unit === 'cm') {
-            gridTolerance = 2.0;
+            gridTolerance = gridToleranceMeters * 100;
           } else if (unit === 'mm') {
-            gridTolerance = 20.0;
+            gridTolerance = gridToleranceMeters * 1000;
           } else if (unit === 'ft' || unit === 'foot' || unit === 'feet') {
-            gridTolerance = 0.02 / 0.3048;
+            gridTolerance = gridToleranceMeters / 0.3048;
           } else if (unit === 'in' || unit === 'inch' || unit === 'inches') {
-            gridTolerance = 0.02 / 0.0254;
+            gridTolerance = gridToleranceMeters / 0.0254;
           }
         }
 
@@ -681,6 +944,8 @@ export const ThreeViewport = ({
 
           modelData.elements.walls.forEach((wall) => {
             try {
+              if (hiddenElementIds.has(wall.revit_id)) return;
+
               // Filter by Level
               if (selectedLevelId !== '3d') {
                 if (wall.level !== selectedLevelId) return;
@@ -779,10 +1044,10 @@ export const ThreeViewport = ({
                 // Create a 3D box geometry for the wall
                 const geometry = new THREE.BoxGeometry(thickness, height, length);
                 
-                 // Matte solid concrete grey for walls (or blue if selected)
-                 const isSelected = selectedElement && selectedElement.id === wall.revit_id;
+                // Matte solid concrete grey for walls (or blue if selected)
+                const isSelected = selectedIdsSet.has(wall.revit_id);
                  const material = new THREE.MeshStandardMaterial({
-                   color: isSelected ? 0x2563eb : 0x94a3b8, // Blue if selected, Slate concrete grey otherwise
+                   color: isSelected ? 0x2563eb : getElementColor('wall', wall.section), // Blue if selected, dynamic color otherwise
                    roughness: isSelected ? 0.6 : 0.8,
                    metalness: isSelected ? 0.2 : 0.1,
                    transparent: enableTransparency,
@@ -834,6 +1099,8 @@ export const ThreeViewport = ({
 
           modelData.elements.beams.forEach((beam) => {
             try {
+              if (hiddenElementIds.has(beam.revit_id)) return;
+
               if (selectedLevelId !== '3d') {
                 if (beam.level !== selectedLevelId) return;
               } else {
@@ -883,10 +1150,10 @@ export const ThreeViewport = ({
                 // Draw a box geometry connecting them
                 const beamGeo = new THREE.BoxGeometry(thickness, height, distance);
                 
-                 // Matte solid concrete grey for beams (or blue if selected)
-                 const isSelected = selectedElement && selectedElement.id === beam.revit_id;
+                // Matte solid concrete grey for beams (or blue if selected)
+                const isSelected = selectedIdsSet.has(beam.revit_id);
                  const beamMat = new THREE.MeshStandardMaterial({
-                   color: isSelected ? 0x2563eb : 0x64748b, // Blue if selected, Darker concrete grey otherwise
+                   color: isSelected ? 0x2563eb : getElementColor('beam', beam.section), // Blue if selected, dynamic color otherwise
                    roughness: isSelected ? 0.6 : 0.8,
                    metalness: isSelected ? 0.2 : 0.1,
                    transparent: enableTransparency,
@@ -933,6 +1200,8 @@ export const ThreeViewport = ({
 
           modelData.elements.slabs.forEach((slab) => {
             try {
+              if (hiddenElementIds.has(slab.revit_id)) return;
+
               if (selectedLevelId !== '3d') {
                 if (slab.level !== selectedLevelId) return;
               } else {
@@ -1015,10 +1284,10 @@ export const ThreeViewport = ({
                 // Rotate shape geometry so XY horizontal plane matches Three.js XZ plane
                 geometry.rotateX(-Math.PI / 2);
 
-                 // Matte solid concrete grey for slabs (or blue if selected)
-                 const isSelected = selectedElement && selectedElement.id === slab.revit_id;
+                // Matte solid concrete grey for slabs (or blue if selected)
+                const isSelected = selectedIdsSet.has(slab.revit_id);
                  const material = new THREE.MeshStandardMaterial({
-                   color: isSelected ? 0x2563eb : 0xcbd5e1, // Blue if selected, Lighter concrete grey otherwise
+                   color: isSelected ? 0x2563eb : getElementColor('slab', slab.section), // Blue if selected, dynamic color otherwise
                    roughness: isSelected ? 0.6 : 0.9,
                    metalness: isSelected ? 0.2 : 0.1,
                    side: THREE.DoubleSide,
@@ -1203,7 +1472,7 @@ export const ThreeViewport = ({
       console.error('Geometry update error:', err);
       setErrorLog(err.message || String(err));
     }
-  }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation?.dx, processTranslation?.dy, processTranslation?.dz, processTranslation?.alpha, selectedLevelId, selectedGridName, enableTransparency, selectedElement]);
+  }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation?.dx, processTranslation?.dy, processTranslation?.dz, processTranslation?.alpha, selectedLevelId, selectedGridName, enableTransparency, selectedElements, hiddenElementIds, gridToleranceMeters, visualizationMode]);
 
   const resetZoomAndFrame = () => {
     console.log('[resetZoomAndFrame] Triggered. selectedLevelId:', selectedLevelId, 'selectedGridName:', selectedGridName);
@@ -1656,6 +1925,21 @@ export const ThreeViewport = ({
           color: #ffffff;
           border-color: #004ac6;
         }
+
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(4px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in {
+          animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        @keyframes scaleUp {
+          from { transform: scale(0.95); opacity: 0; }
+          to { transform: scale(1); opacity: 1; }
+        }
+        .animate-scale-up {
+          animation: scaleUp 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
       `}} />
 
       {/* Interactive Navigation Cube */}
@@ -1812,6 +2096,22 @@ export const ThreeViewport = ({
             <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M20.25 3.75v4.5m0-4.5h-4.5m4.5 0L15 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15m11.25 5.25v-4.5m0 4.5h-4.5m4.5 0L15 15" />
           </svg>
         </button>
+
+        {/* Settings / Configuración */}
+        <button 
+          onClick={() => {
+            setTempGridTolerance(gridToleranceMeters);
+            setTempVisualizationMode(visualizationMode);
+            setIsSettingsOpen(true);
+          }}
+          className={`option-btn ${isSettingsOpen ? 'active' : ''}`}
+          title="Configuración de visualización"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.43l-1.003.828c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.43l1.004-.827c.292-.24.437-.613.43-.991a6.936 6.936 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" />
+          </svg>
+        </button>
       </div>
 
       {/* Floating Debug Panel */}
@@ -1830,69 +2130,85 @@ export const ThreeViewport = ({
               <div>Polygons: {polygonCount.toLocaleString()}</div>
             </>
           )}
-          {selectedElement && (
+          {selectedElements.length > 0 && (
             <div className="mt-2 border-t border-white/20 pt-2 text-[10px] text-blue-300">
-              <h5 className="font-bold mb-1 text-blue-400">Elemento Seleccionado:</h5>
-              <div>Tipo: {selectedElement.type.toUpperCase()}</div>
-              <div>ID Revit: {selectedElement.id}</div>
-              <div>Sección: {selectedElement.data.section}</div>
-              <div>Nivel: {selectedElement.data.level}</div>
-              {selectedElement.type === 'wall' && (
-                <>
-                  <div>Altura: {selectedElement.data.location.height ?? 'N/A'} m</div>
-                  {(() => {
-                    const outline = selectedElement.data.location.outline;
-                    if (outline && outline.length >= 2) {
-                      let maxDist = -1;
-                      for (let i = 0; i < outline.length; i++) {
-                        for (let j = i + 1; j < outline.length; j++) {
-                          const dx = outline[i][0] - outline[j][0];
-                          const dy = outline[i][1] - outline[j][1];
-                          const dist = Math.sqrt(dx * dx + dy * dy);
-                          if (dist > maxDist) maxDist = dist;
+              <h5 className="font-bold mb-1 text-blue-400">
+                {selectedElements.length === 1 
+                  ? "Elemento Seleccionado:" 
+                  : `${selectedElements.length} Elementos Seleccionados:`}
+              </h5>
+              {selectedElements.length > 1 && (
+                <div className="mb-2 bg-white/5 p-1.5 rounded border border-white/10 space-y-0.5 text-gray-300">
+                  <div>Muros: {selectedElements.filter(el => el.type === 'wall').length}</div>
+                  <div>Vigas: {selectedElements.filter(el => el.type === 'beam').length}</div>
+                  <div>Losas: {selectedElements.filter(el => el.type === 'slab').length}</div>
+                </div>
+              )}
+              {selectedElement && (
+                <div className="mt-1">
+                  {selectedElements.length > 1 && <div className="text-[9px] text-blue-400 font-bold mb-1 uppercase tracking-wider">Detalle del último seleccionado:</div>}
+                  <div>Tipo: {selectedElement.type.toUpperCase()}</div>
+                  <div>ID Revit: {selectedElement.id}</div>
+                  <div>Sección: {selectedElement.data.section}</div>
+                  <div>Nivel: {selectedElement.data.level}</div>
+                  {selectedElement.type === 'wall' && (
+                    <>
+                      <div>Altura: {selectedElement.data.location.height ?? 'N/A'} m</div>
+                      {(() => {
+                        const outline = selectedElement.data.location.outline;
+                        if (outline && outline.length >= 2) {
+                          let maxDist = -1;
+                          for (let i = 0; i < outline.length; i++) {
+                            for (let j = i + 1; j < outline.length; j++) {
+                              const dx = outline[i][0] - outline[j][0];
+                              const dy = outline[i][1] - outline[j][1];
+                              const dist = Math.sqrt(dx * dx + dy * dy);
+                              if (dist > maxDist) maxDist = dist;
+                            }
+                          }
+                          return <div>Longitud: {maxDist.toFixed(2)} m</div>;
                         }
-                      }
-                      return <div>Longitud: {maxDist.toFixed(2)} m</div>;
+                        return null;
+                      })()}
+                    </>
+                  )}
+                  {selectedElement.type === 'beam' && selectedElement.data.location.start && selectedElement.data.location.end && (
+                    <>
+                      {(() => {
+                        const start = selectedElement.data.location.start;
+                        const end = selectedElement.data.location.end;
+                        const dx = end[0] - start[0];
+                        const dy = end[1] - start[1];
+                        const dz = end[2] - start[2];
+                        const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                        return <div>Longitud: {len.toFixed(2)} m</div>;
+                      })()}
+                    </>
+                  )}
+                  {selectedElement.type === 'slab' && (
+                    <>
+                      {(() => {
+                        const outline = selectedElement.data.location.outline;
+                        return <div>Vértices: {outline ? outline.length : 0}</div>;
+                      })()}
+                    </>
+                  )}
+                  {(() => {
+                    const sec = modelData?.sections.find(s => s.code_name === selectedElement.data.section);
+                    if (sec) {
+                      return (
+                        <div className="mt-1 border-t border-white/10 pt-1 text-[9px] text-gray-400">
+                          <div>Material: {sec.material}</div>
+                          {sec.parameters.thickness !== undefined && <div>Espesor: {sec.parameters.thickness * 1000} mm</div>}
+                          {sec.parameters.width !== undefined && <div>Ancho: {sec.parameters.width * 1000} mm</div>}
+                          {sec.parameters.height !== undefined && <div>Peralte: {sec.parameters.height * 1000} mm</div>}
+                        </div>
+                      );
                     }
                     return null;
                   })()}
-                </>
+                </div>
               )}
-              {selectedElement.type === 'beam' && selectedElement.data.location.start && selectedElement.data.location.end && (
-                <>
-                  {(() => {
-                    const start = selectedElement.data.location.start;
-                    const end = selectedElement.data.location.end;
-                    const dx = end[0] - start[0];
-                    const dy = end[1] - start[1];
-                    const dz = end[2] - start[2];
-                    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                    return <div>Longitud: {len.toFixed(2)} m</div>;
-                  })()}
-                </>
-              )}
-              {selectedElement.type === 'slab' && (
-                <>
-                  {(() => {
-                    const outline = selectedElement.data.location.outline;
-                    return <div>Vértices: {outline ? outline.length : 0}</div>;
-                  })()}
-                </>
-              )}
-              {(() => {
-                const sec = modelData?.sections.find(s => s.code_name === selectedElement.data.section);
-                if (sec) {
-                  return (
-                    <div className="mt-1 border-t border-white/10 pt-1 text-[9px] text-gray-400">
-                      <div>Material: {sec.material}</div>
-                      {sec.parameters.thickness !== undefined && <div>Espesor: {sec.parameters.thickness * 1000} mm</div>}
-                      {sec.parameters.width !== undefined && <div>Ancho: {sec.parameters.width * 1000} mm</div>}
-                      {sec.parameters.height !== undefined && <div>Peralte: {sec.parameters.height * 1000} mm</div>}
-                    </div>
-                  );
-                }
-                return null;
-              })()}
             </div>
           )}
           {errorLog && (
@@ -1900,6 +2216,210 @@ export const ThreeViewport = ({
                Error: {errorLog}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Selection Box Overlay */}
+      {selectionBox && (
+        <div
+          style={{
+            position: 'absolute',
+            left: Math.min(selectionBox.startX, selectionBox.currentX) - (mountRef.current?.getBoundingClientRect().left || 0),
+            top: Math.min(selectionBox.startY, selectionBox.currentY) - (mountRef.current?.getBoundingClientRect().top || 0),
+            width: Math.abs(selectionBox.startX - selectionBox.currentX),
+            height: Math.abs(selectionBox.startY - selectionBox.currentY),
+            pointerEvents: 'none',
+            border: selectionBox.startX <= selectionBox.currentX
+              ? '1.5px solid #2563eb' // Window: Solid Blue
+              : '1.5px dashed #10b981', // Crossing: Dashed Green
+            backgroundColor: selectionBox.startX <= selectionBox.currentX
+              ? 'rgba(37, 99, 235, 0.15)'
+              : 'rgba(16, 185, 129, 0.15)',
+            zIndex: 1000
+          }}
+        />
+      )}
+
+      {/* Options Palette Floating Popup */}
+      {optionPalette && optionPalette.visible && (
+        <div
+          style={{
+            position: 'absolute',
+            left: optionPalette.x - (mountRef.current?.getBoundingClientRect().left || 0),
+            top: optionPalette.y - (mountRef.current?.getBoundingClientRect().top || 0) + 12,
+            zIndex: 1010
+          }}
+          className="bg-slate-900/95 backdrop-blur-md border border-slate-700/50 rounded-lg p-1.5 shadow-2xl flex items-center space-x-1 animate-fade-in pointer-events-auto select-none min-w-[200px]"
+        >
+          <span className="text-[10px] text-gray-400 font-bold px-1.5 border-r border-slate-800">
+            {selectedElements.length === 1 ? optionPalette.elementId : `${selectedElements.length} sel.`}
+          </span>
+          <button
+            onClick={() => {
+              const newHidden = new Set(hiddenElementIds);
+              selectedElements.forEach(el => newHidden.add(el.id));
+              setHiddenElementIds(newHidden);
+              setSelectedElements([]);
+              setOptionPalette(null);
+            }}
+            className="text-[10px] text-white hover:bg-red-500/20 hover:text-red-300 px-2 py-1 rounded transition font-medium"
+            title="Ocultar elementos seleccionados en la vista"
+          >
+            Ocultar
+          </button>
+          <button
+            onClick={() => {
+              const newHidden = new Set<string>(hiddenElementIds);
+              sceneInstance?.traverse((obj) => {
+                if (obj.userData && obj.userData.id && (obj.userData.type === 'wall' || obj.userData.type === 'beam' || obj.userData.type === 'slab')) {
+                  if (!selectedElements.some(el => el.id === obj.userData.id)) {
+                    newHidden.add(obj.userData.id);
+                  }
+                }
+              });
+              setHiddenElementIds(newHidden);
+              setSelectedElements(selectedElements); // refresh selection
+              setOptionPalette(null);
+            }}
+            className="text-[10px] text-white hover:bg-blue-500/20 hover:text-blue-300 px-2 py-1 rounded transition font-medium"
+            title="Aislar elementos seleccionados (oculta todo lo demás)"
+          >
+            Aislar
+          </button>
+          <button
+            onClick={() => {
+              setSelectedElements([]);
+              setOptionPalette(null);
+            }}
+            className="text-[10px] text-gray-400 hover:bg-slate-800 hover:text-white px-2 py-1 rounded transition font-medium"
+          >
+            Cerrar
+          </button>
+        </div>
+      )}
+
+      {/* Restore Hidden Elements Button */}
+      {hiddenElementIds.size > 0 && (
+        <button
+          onClick={() => {
+            setHiddenElementIds(new Set());
+            setSelectedElements([]);
+            setOptionPalette(null);
+          }}
+          className="absolute bottom-4 right-16 z-50 bg-amber-600/90 hover:bg-amber-500 text-white backdrop-blur-sm border border-amber-500/50 rounded-lg px-3 py-1.5 shadow-xl text-xs font-semibold flex items-center space-x-1.5 transition"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.43 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+          </svg>
+          <span>Restaurar {hiddenElementIds.size} ocultos</span>
+        </button>
+      )}
+
+      {/* Settings Modal (Configuración de Visualización) */}
+      {isSettingsOpen && (
+        <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px] z-[2000] flex items-center justify-center pointer-events-auto transition-all animate-fade-in">
+          <div className="bg-background border border-outline-variant/30 rounded-2xl w-full max-w-sm p-5 shadow-2xl animate-scale-up select-none flex flex-col pointer-events-auto mx-4">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-outline-variant/15 pb-3 mb-4">
+              <div className="flex items-center space-x-2 text-primary">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.43l-1.003.828c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.43l1.004-.827c.292-.24.437-.613.43-.991a6.936 6.936 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" />
+                </svg>
+                <h3 className="text-sm font-bold text-on-surface font-headline">Configuración de Visualización</h3>
+              </div>
+              <button 
+                onClick={() => setIsSettingsOpen(false)}
+                className="text-on-surface-variant/70 hover:text-on-surface hover:bg-outline-variant/10 p-1 rounded-lg transition"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 space-y-4">
+              {/* Parameter "Visualizar" */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">
+                  Visualizar
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { value: 'espesores', label: 'Espesores', icon: 'M3 7.5L7.5 3m0 0L12 7.5M7.5 3v13.5m9-4.5L12 16.5m0 0l4.5 4.5M12 16.5V3' },
+                    { value: 'material', label: 'Material', icon: 'M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10' },
+                    { value: 'tipo', label: 'Tipo', icon: 'M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z' },
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setTempVisualizationMode(opt.value)}
+                      className={`flex flex-col items-center justify-center p-2.5 rounded-xl border text-center transition-all ${
+                        tempVisualizationMode === opt.value
+                          ? 'bg-primary/5 border-primary text-primary font-bold shadow-sm'
+                          : 'bg-surface border-outline-variant/30 text-on-surface-variant/80 hover:bg-outline-variant/5'
+                      }`}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 mb-1">
+                        <path strokeLinecap="round" strokeLinejoin="round" d={opt.icon} />
+                      </svg>
+                      <span className="text-[10px]">{opt.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Parameter "Profundidad de búsqueda en ejes" */}
+              <div className="space-y-1.5 pt-2 border-t border-outline-variant/10">
+                <div className="flex justify-between items-center">
+                  <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">
+                    Profundidad en ejes
+                  </label>
+                  <span className="text-[10px] font-extrabold text-primary px-2 py-0.5 bg-primary/10 rounded-full font-mono">
+                    {getFormattedTolerance(tempGridTolerance)}
+                  </span>
+                </div>
+                <p className="text-[11px] text-on-surface-variant/80 leading-normal">
+                  Ajusta la tolerancia para asociar elementos constructivos con el eje seleccionado.
+                </p>
+                
+                <div className="pt-1.5 flex items-center space-x-3">
+                  <span className="text-[10px] font-semibold text-on-surface-variant/40">5 mm</span>
+                  <input
+                    type="range"
+                    min="0.005"
+                    max="1.500"
+                    step="0.005"
+                    value={tempGridTolerance}
+                    onChange={(e) => setTempGridTolerance(parseFloat(e.target.value))}
+                    className="flex-1 h-1 bg-outline-variant/30 rounded-lg appearance-none cursor-pointer accent-primary focus:outline-none"
+                  />
+                  <span className="text-[10px] font-semibold text-on-surface-variant/40">1.5 m</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end space-x-2.5 border-t border-outline-variant/15 pt-3 mt-4">
+              <button
+                onClick={() => setIsSettingsOpen(false)}
+                className="px-3 py-1.5 border border-outline-variant/40 rounded-lg text-[11px] font-bold text-on-surface hover:bg-outline-variant/10 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => {
+                  setGridToleranceMeters(tempGridTolerance);
+                  setVisualizationMode(tempVisualizationMode);
+                  setIsSettingsOpen(false);
+                }}
+                className="px-3 py-1.5 bg-primary hover:bg-primary/90 text-white rounded-lg text-[11px] font-bold shadow-md transition-all active:scale-[0.97]"
+              >
+                Aceptar
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

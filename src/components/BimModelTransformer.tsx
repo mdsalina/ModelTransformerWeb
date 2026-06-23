@@ -52,6 +52,7 @@ export const BimModelTransformer = () => {
 
   // Filters State
   const [filters, setFilters] = useState<FiltersState>(DEFAULT_FILTERS);
+  const [hiddenElementIds, setHiddenElementIds] = useState<Set<string>>(new Set());
 
   // Processing Parameters State
   const [processingParams, setProcessingParams] = useState<ProcessingParams>({
@@ -191,6 +192,114 @@ export const BimModelTransformer = () => {
   };
 
   const handleProcessCompleted = (updatedModelData: JsonModelData) => {
+    setModelData(updatedModelData);
+    updateFiltersAndLimitsFromModel(updatedModelData);
+  };
+
+  const handleFilterAndSave = () => {
+    if (!modelData) return;
+
+    // 1. Obtener niveles marcados
+    const checkedLevels = new Set(
+      filters.levels.filter((l) => l.checked).map((l) => l.id)
+    );
+
+    // 2. Obtener secciones marcadas
+    const checkedWallsSecs = new Set(
+      filters.walls.filter((s) => s.checked).map((s) => s.name)
+    );
+    const checkedBeamsSecs = new Set(
+      filters.beams.filter((s) => s.checked).map((s) => s.name)
+    );
+    const checkedSlabsSecs = new Set(
+      filters.slabs.filter((s) => s.checked).map((s) => s.name)
+    );
+
+    // 3. Filtrar muros
+    const filteredWalls = (modelData.elements.walls || []).filter((wall) => {
+      if (!filters.elements.muros) return false;
+      if (!checkedLevels.has(wall.level)) return false;
+      if (!checkedWallsSecs.has(wall.section)) return false;
+      if (hiddenElementIds.has(wall.revit_id)) return false;
+
+      const wallSec = modelData.sections.find(s => s.code_name === wall.section);
+      if (wallSec) {
+        const thickness = (wallSec.parameters.thickness || 0.2) * 1000;
+        if (thickness < filters.thickness.walls.min || thickness > filters.thickness.walls.max) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    // 4. Filtrar vigas
+    const filteredBeams = (modelData.elements.beams || []).filter((beam) => {
+      if (!filters.elements.vigas) return false;
+      if (!checkedLevels.has(beam.level)) return false;
+      if (!checkedBeamsSecs.has(beam.section)) return false;
+      if (hiddenElementIds.has(beam.revit_id)) return false;
+
+      const beamSec = modelData.sections.find(s => s.code_name === beam.section);
+      if (beamSec) {
+        const thickness = (beamSec.parameters.width || 0.2) * 1000;
+        if (thickness < filters.thickness.beams.min || thickness > filters.thickness.beams.max) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    // 5. Filtrar losas
+    const filteredSlabs = (modelData.elements.slabs || []).filter((slab) => {
+      if (!filters.elements.losas) return false;
+      if (!checkedLevels.has(slab.level)) return false;
+      if (!checkedSlabsSecs.has(slab.section)) return false;
+      if (hiddenElementIds.has(slab.revit_id)) return false;
+
+      const slabSec = modelData.sections.find(s => s.code_name === slab.section);
+      if (slabSec) {
+        const thickness = (slabSec.parameters.thickness || 0.15) * 1000;
+        if (thickness < filters.thickness.slabs.min || thickness > filters.thickness.slabs.max) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    // 6. Columnas
+    const filteredColumns = (modelData.elements.columns || []).filter((col) => {
+      if (col.revit_id && hiddenElementIds.has(col.revit_id)) return false;
+      return true;
+    });
+
+    // 7. Grillas
+    const filteredGrids = filters.elements.grillas ? (modelData.grids || []) : [];
+
+    // 8. Filtrar secciones para dejar solo las usadas
+    const usedSectionNames = new Set<string>();
+    filteredWalls.forEach(w => usedSectionNames.add(w.section));
+    filteredBeams.forEach(b => usedSectionNames.add(b.section));
+    filteredSlabs.forEach(s => usedSectionNames.add(s.section));
+    filteredColumns.forEach(c => {
+      if (c.section) usedSectionNames.add(c.section);
+    });
+
+    const filteredSections = modelData.sections.filter(s => usedSectionNames.has(s.code_name));
+
+    const updatedModelData: JsonModelData = {
+      ...modelData,
+      grids: filteredGrids,
+      sections: filteredSections,
+      elements: {
+        ...modelData.elements,
+        walls: filteredWalls,
+        beams: filteredBeams,
+        slabs: filteredSlabs,
+        columns: filteredColumns
+      }
+    };
+
+    setHiddenElementIds(new Set());
     setModelData(updatedModelData);
     updateFiltersAndLimitsFromModel(updatedModelData);
   };
@@ -387,6 +496,8 @@ export const BimModelTransformer = () => {
                     ? processingParams.processes.moveCoords
                     : { dx: 0, dy: 0, dz: 0, alpha: 0 }
                 }
+                hiddenElementIds={hiddenElementIds}
+                setHiddenElementIds={setHiddenElementIds}
               />
             </div>
           </div>
@@ -406,6 +517,7 @@ export const BimModelTransformer = () => {
             filters={filters} 
             setFilters={setFilters} 
             thicknessLimits={thicknessLimits}
+            onFilterAndSave={handleFilterAndSave}
           />
         )}
         

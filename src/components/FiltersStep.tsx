@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import type { Dispatch, SetStateAction, MouseEvent as ReactMouseEvent, TouchEvent as ReactTouchEvent } from 'react';
 import type { FiltersState } from '../types';
 import { 
-  ExpandMoreIcon
+  ExpandMoreIcon,
+  CheckIcon
 } from './Icons';
 
 interface FiltersStepProps {
@@ -13,9 +14,10 @@ interface FiltersStepProps {
     beams: { min: number; max: number };
     slabs: { min: number; max: number };
   };
+  onFilterAndSave: () => void;
 }
 
-export const FiltersStep = ({ filters, setFilters, thicknessLimits }: FiltersStepProps) => {
+export const FiltersStep = ({ filters, setFilters, thicknessLimits, onFilterAndSave }: FiltersStepProps) => {
 
   const handleElementToggle = (key: keyof FiltersState['elements']) => {
     setFilters(prev => ({
@@ -566,6 +568,17 @@ export const FiltersStep = ({ filters, setFilters, thicknessLimits }: FiltersSte
               </div>
             </section>
           </div>
+        </div>
+
+        {/* Sidebar Footer Execution Button */}
+        <div className="p-6 bg-surface-container-low border-t border-outline-variant/15 flex-shrink-0">
+          <button 
+            onClick={onFilterAndSave}
+            className="w-full py-3 px-4 text-on-primary hover:opacity-95 font-body font-semibold text-sm rounded-DEFAULT transition-all flex justify-center items-center gap-2 shadow-sm cursor-pointer hover:scale-[0.99] active:scale-[0.97] bg-primary"
+          >
+            <CheckIcon className="w-4 h-4" />
+            <span>Filtrar y guardar</span>
+          </button>
         </div>
       </div>
 
