@@ -177,6 +177,8 @@ export const ThreeViewport = ({
       setSelectedGridName('none');
     }
   };
+  const prevModelDataRef = useRef<JsonModelData | null>(null);
+  const prevModelDataRefForCamera = useRef<JsonModelData | null>(null);
 
   const handleGridChange = (gridName: string) => {
     setSelectedGridName(gridName);
@@ -187,12 +189,43 @@ export const ThreeViewport = ({
 
   // Reset fit-camera ref, selected level/grid, and selected element when modelData changes
   useEffect(() => {
+    const prevModel = prevModelDataRef.current;
+    prevModelDataRef.current = modelData;
+
     hasFitCameraRef.current = false;
-    setSelectedLevelId('3d');
-    setSelectedGridName('none');
     setSelectedElements([]);
     setOptionPalette(null);
     setHiddenElementIds(new Set());
+
+    if (modelData) {
+      // 1. Level persistence by name
+      if (selectedLevelId !== '3d' && prevModel) {
+        const oldLevel = prevModel.levels.find(l => l.id === selectedLevelId);
+        if (oldLevel) {
+          const matchingNewLevel = modelData.levels.find(l => l.name === oldLevel.name);
+          if (matchingNewLevel) {
+            setSelectedLevelId(matchingNewLevel.id);
+          } else {
+            setSelectedLevelId('3d');
+          }
+        } else {
+          setSelectedLevelId('3d');
+        }
+      } else {
+        setSelectedLevelId('3d');
+      }
+
+      // 2. Grid/Axis persistence by name
+      if (selectedGridName !== 'none') {
+        const hasMatchingGrid = modelData.grids && modelData.grids.some(g => g.name === selectedGridName);
+        if (!hasMatchingGrid) {
+          setSelectedGridName('none');
+        }
+      }
+    } else {
+      setSelectedLevelId('3d');
+      setSelectedGridName('none');
+    }
   }, [modelData]);
 
   // Sync ground grid visibility directly using ref
@@ -218,9 +251,12 @@ export const ThreeViewport = ({
 
     const prevLevelId = prevSelectedLevelIdRef.current;
     const prevGridName = prevSelectedGridNameRef.current;
+    const prevModelForCam = prevModelDataRefForCamera.current;
+    prevModelDataRefForCamera.current = modelData;
+    const hasModelChanged = modelData !== prevModelForCam;
 
-    const hasLevelChanged = selectedLevelId !== prevLevelId;
-    const hasGridChanged = selectedGridName !== prevGridName;
+    const hasLevelChanged = selectedLevelId !== prevLevelId || hasModelChanged;
+    const hasGridChanged = selectedGridName !== prevGridName || hasModelChanged;
 
     prevSelectedLevelIdRef.current = selectedLevelId;
     prevSelectedGridNameRef.current = selectedGridName;
@@ -325,6 +361,19 @@ export const ThreeViewport = ({
           const dir = new THREE.Vector3().subVectors(p2, p1);
           dir.y = 0;
           dir.normalize();
+
+          // Asegurar orientación consistente (evitar vista en espejo si p1 y p2 están invertidos entre modelos o en el JSON original)
+          // Si es mayormente vertical (Z domina), asegurar que dir apunte hacia el Norte (-Z)
+          // Si es mayormente horizontal (X domina), asegurar que dir apunte hacia el Este (+X)
+          if (Math.abs(dir.z) > Math.abs(dir.x)) {
+            if (dir.z > 0) {
+              dir.multiplyScalar(-1);
+            }
+          } else {
+            if (dir.x < 0) {
+              dir.multiplyScalar(-1);
+            }
+          }
 
           // Normal of grid (perpendicular in XZ plane)
           const normal = new THREE.Vector3(-dir.z, 0, dir.x);
@@ -1348,6 +1397,20 @@ export const ThreeViewport = ({
             const dir = new THREE.Vector3().subVectors(p2_mid, p1_mid);
             dir.y = 0;
             dir.normalize();
+
+            // Asegurar orientación consistente (evitar vista en espejo si p1 y p2 están invertidos entre modelos o en el JSON original)
+            // Si es mayormente vertical (Z domina), asegurar que dir apunte hacia el Norte (-Z)
+            // Si es mayormente horizontal (X domina), asegurar que dir apunte hacia el Este (+X)
+            if (Math.abs(dir.z) > Math.abs(dir.x)) {
+              if (dir.z > 0) {
+                dir.multiplyScalar(-1);
+              }
+            } else {
+              if (dir.x < 0) {
+                dir.multiplyScalar(-1);
+              }
+            }
+
             const normal = new THREE.Vector3(-dir.z, 0, dir.x);
 
             modelData.levels.forEach((lvl) => {
@@ -1556,6 +1619,20 @@ export const ThreeViewport = ({
         const dir = new THREE.Vector3().subVectors(p2, p1);
         dir.y = 0;
         dir.normalize();
+
+        // Asegurar orientación consistente (evitar vista en espejo si p1 y p2 están invertidos entre modelos o en el JSON original)
+        // Si es mayormente vertical (Z domina), asegurar que dir apunte hacia el Norte (-Z)
+        // Si es mayormente horizontal (X domina), asegurar que dir apunte hacia el Este (+X)
+        if (Math.abs(dir.z) > Math.abs(dir.x)) {
+          if (dir.z > 0) {
+            dir.multiplyScalar(-1);
+          }
+        } else {
+          if (dir.x < 0) {
+            dir.multiplyScalar(-1);
+          }
+        }
+
         const normal = new THREE.Vector3(-dir.z, 0, dir.x);
 
         const distance = Math.max(length, height) * 2;

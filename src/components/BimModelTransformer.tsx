@@ -46,6 +46,9 @@ export const BimModelTransformer = () => {
   // File Upload State
   const [fileDetails, setFileDetails] = useState<FileDetails | null>(null);
   const [modelData, setModelData] = useState<JsonModelData | null>(null);
+  const [originalModel, setOriginalModel] = useState<JsonModelData | null>(null);
+  const [processedModel, setProcessedModel] = useState<JsonModelData | null>(null);
+  const [activeModelType, setActiveModelType] = useState<'original' | 'processed'>('original');
 
   // Thickness Limits State
   const [thicknessLimits, setThicknessLimits] = useState(DEFAULT_LIMITS);
@@ -106,13 +109,16 @@ export const BimModelTransformer = () => {
     setCurrentStep('upload');
   };
 
-  const updateFiltersAndLimitsFromModel = (data: JsonModelData) => {
+  const updateFiltersAndLimitsFromModel = (data: JsonModelData, currentFilters?: FiltersState) => {
     // 1. Process levels
-    const dynamicLevels = data.levels.map(l => ({
-      id: l.id,
-      name: l.name,
-      checked: true
-    }));
+    const dynamicLevels = data.levels.map(l => {
+      const existingLvl = currentFilters?.levels.find(el => el.name === l.name);
+      return {
+        id: l.id,
+        name: l.name,
+        checked: existingLvl ? existingLvl.checked : true
+      };
+    });
 
     // 2. Process sections
     const wallsSecs: { id: string, name: string, checked: boolean, thickness: number }[] = [];
@@ -126,17 +132,35 @@ export const BimModelTransformer = () => {
       if (secType === 'Wall') {
         const thickness = (section.parameters.thickness || 0.2) * 1000;
         if (!wallsSecs.some(s => s.name === secName)) {
-          wallsSecs.push({ id: `wall-${index}`, name: secName, checked: true, thickness });
+          const existingSec = currentFilters?.walls.find(es => es.name === secName);
+          wallsSecs.push({ 
+            id: `wall-${index}`, 
+            name: secName, 
+            checked: existingSec ? existingSec.checked : true, 
+            thickness 
+          });
         }
       } else if (secType === 'Slab') {
         const thickness = (section.parameters.thickness || 0.15) * 1000;
         if (!slabsSecs.some(s => s.name === secName)) {
-          slabsSecs.push({ id: `slab-${index}`, name: secName, checked: true, thickness });
+          const existingSec = currentFilters?.slabs.find(es => es.name === secName);
+          slabsSecs.push({ 
+            id: `slab-${index}`, 
+            name: secName, 
+            checked: existingSec ? existingSec.checked : true, 
+            thickness 
+          });
         }
       } else if (secType === 'Frame') {
         const thickness = (section.parameters.width || 0.2) * 1000;
         if (!beamsSecs.some(s => s.name === secName)) {
-          beamsSecs.push({ id: `beam-${index}`, name: secName, checked: true, thickness });
+          const existingSec = currentFilters?.beams.find(es => es.name === secName);
+          beamsSecs.push({ 
+            id: `beam-${index}`, 
+            name: secName, 
+            checked: existingSec ? existingSec.checked : true, 
+            thickness 
+          });
         }
       }
     });
@@ -155,45 +179,96 @@ export const BimModelTransformer = () => {
     const beamsRange = minMax(beamsThs, 200, 600);
     const slabsRange = minMax(slabsThs, 100, 250);
 
-    // 4. Update limits and current selections
-    setThicknessLimits({
+    // 4. Update limits
+    const newLimits = {
       walls: { min: wallsRange.min, max: wallsRange.max },
       beams: { min: beamsRange.min, max: beamsRange.max },
       slabs: { min: slabsRange.min, max: slabsRange.max }
-    });
+    };
+    setThicknessLimits(newLimits);
+
+    // 5. Build new filters
+    const preservedElements = currentFilters 
+      ? { ...currentFilters.elements } 
+      : { muros: true, vigas: true, losas: true, grillas: true };
+    
+    const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
+    
+    const preservedThickness = currentFilters ? {
+      walls: {
+        min: clamp(currentFilters.thickness.walls.min, newLimits.walls.min, newLimits.walls.max),
+        max: clamp(currentFilters.thickness.walls.max, newLimits.walls.min, newLimits.walls.max)
+      },
+      beams: {
+        min: clamp(currentFilters.thickness.beams.min, newLimits.beams.min, newLimits.beams.max),
+        max: clamp(currentFilters.thickness.beams.max, newLimits.beams.min, newLimits.beams.max)
+      },
+      slabs: {
+        min: clamp(currentFilters.thickness.slabs.min, newLimits.slabs.min, newLimits.slabs.max),
+        max: clamp(currentFilters.thickness.slabs.max, newLimits.slabs.min, newLimits.slabs.max)
+      }
+    } : {
+      walls: { min: wallsRange.min, max: wallsRange.max },
+      beams: { min: beamsRange.min, max: beamsRange.max },
+      slabs: { min: slabsRange.min, max: slabsRange.max }
+    };
 
     setFilters({
-      testMode: false,
-      elements: { muros: true, vigas: true, losas: true, grillas: true },
+      testMode: currentFilters?.testMode ?? false,
+      elements: preservedElements,
       levels: dynamicLevels,
       walls: wallsSecs,
       beams: beamsSecs,
       slabs: slabsSecs,
-      thickness: {
-        walls: { min: wallsRange.min, max: wallsRange.max },
-        beams: { min: beamsRange.min, max: beamsRange.max },
-        slabs: { min: slabsRange.min, max: slabsRange.max }
-      }
+      thickness: preservedThickness
     });
   };
 
   const handleFileUploaded = (file: FileDetails, data: JsonModelData) => {
     setFileDetails(file);
     setModelData(data);
+    setOriginalModel(data);
+    setProcessedModel(null);
+    setActiveModelType('original');
     updateFiltersAndLimitsFromModel(data);
   };
 
   const handleClearFile = () => {
     setFileDetails(null);
     setModelData(null);
+    setOriginalModel(null);
+    setProcessedModel(null);
+    setActiveModelType('original');
     setFilters(DEFAULT_FILTERS);
     setThicknessLimits(DEFAULT_LIMITS);
     setExportState(prev => ({ ...prev, completed: false }));
   };
 
   const handleProcessCompleted = (updatedModelData: JsonModelData) => {
+    setOriginalModel(modelData);
+    setProcessedModel(updatedModelData);
+    setActiveModelType('processed');
     setModelData(updatedModelData);
-    updateFiltersAndLimitsFromModel(updatedModelData);
+    updateFiltersAndLimitsFromModel(updatedModelData, filters);
+  };
+
+  const handleSwitchModel = (type: 'original' | 'processed') => {
+    if (type === activeModelType) return;
+
+    // Guardar el estado del modelo actual antes de cambiar
+    if (activeModelType === 'original') {
+      setOriginalModel(modelData);
+    } else {
+      setProcessedModel(modelData);
+    }
+
+    // Cambiar al modelo seleccionado
+    const targetModel = type === 'original' ? originalModel : processedModel;
+    if (targetModel) {
+      setModelData(targetModel);
+      updateFiltersAndLimitsFromModel(targetModel, filters);
+    }
+    setActiveModelType(type);
   };
 
   const handleFilterAndSave = () => {
@@ -272,8 +347,8 @@ export const BimModelTransformer = () => {
       return true;
     });
 
-    // 7. Grillas
-    const filteredGrids = filters.elements.grillas ? (modelData.grids || []) : [];
+    // 7. Grillas (Las grillas de referencia no se eliminan al filtrar, solo se ocultan visualmente)
+    const filteredGrids = modelData.grids || [];
 
     // 8. Filtrar secciones para dejar solo las usadas
     const usedSectionNames = new Set<string>();
@@ -301,7 +376,12 @@ export const BimModelTransformer = () => {
 
     setHiddenElementIds(new Set());
     setModelData(updatedModelData);
-    updateFiltersAndLimitsFromModel(updatedModelData);
+    if (activeModelType === 'original') {
+      setOriginalModel(updatedModelData);
+    } else {
+      setProcessedModel(updatedModelData);
+    }
+    updateFiltersAndLimitsFromModel(updatedModelData, filters);
   };
 
   // Step access rules
@@ -484,8 +564,37 @@ export const BimModelTransformer = () => {
         {(currentStep === 'filters' || currentStep === 'process' || currentStep === 'export') && (
           <div className="absolute md:left-[360px] left-0 right-0 md:top-0 top-[40vh] bottom-0 z-0 bg-surface-dim p-8 rounded-tl-2xl overflow-hidden flex flex-col min-h-[350px]">
             
+            {/* Control de Modelos (Original / Procesado) */}
+            {modelData && (
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex bg-[#faf8ff]/85 backdrop-blur-md p-1 rounded-xl border border-outline-variant/30 shadow-md pointer-events-auto">
+                <button
+                  onClick={() => handleSwitchModel('original')}
+                  className={`px-4 py-1.5 rounded-lg text-xs font-semibold tracking-tight transition-all duration-150 select-none ${
+                    activeModelType === 'original'
+                      ? 'bg-primary text-on-primary shadow-sm'
+                      : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/50'
+                  }`}
+                >
+                  Original
+                </button>
+                {processedModel && (
+                  <button
+                    onClick={() => handleSwitchModel('processed')}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold tracking-tight transition-all duration-150 select-none ${
+                      activeModelType === 'processed'
+                        ? 'bg-primary text-on-primary shadow-sm'
+                        : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/50'
+                    }`}
+                  >
+                    Procesado
+                  </button>
+                )}
+              </div>
+            )}
+
             <div className="flex-1 relative w-full mt-0" style={{ minHeight: '280px' }}>
               <ThreeViewport 
+                key={fileDetails?.name || ''}
                 modelData={modelData}
                 filters={filters}
                 showGrids={currentStep === 'process' ? true : filters.elements.grillas}

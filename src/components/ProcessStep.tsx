@@ -93,8 +93,8 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, modelData, 
     // 6. Columnas
     const filteredColumns = modelData.elements.columns || [];
 
-    // 7. Grillas
-    const filteredGrids = filters.elements.grillas ? (modelData.grids || []) : [];
+    // 7. Grillas (Las grillas de referencia no se eliminan al filtrar, solo se ocultan visualmente)
+    const filteredGrids = modelData.grids || [];
 
     // 8. Crear estructura final
     return {

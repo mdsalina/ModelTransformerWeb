@@ -216,14 +216,6 @@ export const ExportStep = ({ exportState, setExportState, modelData }: ExportSte
     }
   };
 
-  const getFileSize = () => {
-    switch (exportState.format) {
-      case 'rvt': return '45 MB';
-      case 'edb': return '12 MB';
-      case 'ifc': return '28 MB';
-      default: return '45 MB';
-    }
-  };
 
   return (
     <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative z-10 select-none pointer-events-none h-full w-full">
@@ -347,21 +339,20 @@ export const ExportStep = ({ exportState, setExportState, modelData }: ExportSte
         </div>
 
         {/* Final Action / Download Button */}
-        <div className="p-6 bg-surface-container-lowest border-t border-outline-variant/15 flex-shrink-0 flex flex-col gap-3">
-          <div className="flex items-center gap-2 px-1 text-tertiary font-body text-xs">
-            <InfoIcon className="w-4 h-4 flex-shrink-0" />
-            <span>
-              {exportState.format === 'edb'
-                ? 'Requiere ejecutar el servidor local y tener ETABS abierto.'
-                : `El archivo final pesará aproximadamente ${getFileSize()}.`}
-            </span>
-          </div>
+        <div className="p-6 bg-surface-container-low border-t border-outline-variant/15 flex-shrink-0 flex flex-col gap-3">
+          {exportState.format === 'edb' && (
+            <div className="flex items-center gap-2 px-1 text-tertiary font-body text-xs">
+              <InfoIcon className="w-4 h-4 flex-shrink-0" />
+              <span>Requiere ejecutar el servidor local y tener ETABS abierto.</span>
+            </div>
+          )}
 
           <button
             onClick={handleExportClick}
             disabled={downloading}
-            className={`w-full h-12 rounded-lg text-on-primary font-body text-base font-semibold flex items-center justify-center gap-2 hover:scale-[0.98] transition-all duration-200 shadow-[0_8px_32px_rgba(37,99,235,0.2)] cursor-pointer relative overflow-hidden ${downloading ? 'bg-primary-container border-transparent' : 'btn-primary-gradient hover:opacity-95'
-              }`}
+            className={`w-full py-3 px-4 text-on-primary font-body font-semibold text-sm rounded-DEFAULT transition-all flex justify-center items-center gap-2 shadow-sm cursor-pointer hover:scale-[0.99] active:scale-[0.97] relative overflow-hidden ${
+              downloading ? 'bg-primary-container cursor-not-allowed opacity-80' : 'bg-primary hover:opacity-95'
+            }`}
           >
             {/* Loading slide progress bar inside button */}
             {downloading && (
