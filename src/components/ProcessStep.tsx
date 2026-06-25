@@ -142,7 +142,19 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, modelData, 
         beamGrid: params.grid.generateForBeams,
         divideOnlyWallsByIntersection: params.model.splitWallsOnBeams,
         keepGrids: params.grid.keepExisting,
-        gridTolerance: params.grid.gridTolerance
+        gridTolerance: params.grid.gridTolerance,
+        removeShort: params.processes.removeShort,
+        adjustToGrids: params.processes.adjustToGrids,
+        moveModel: params.processes.moveModel,
+        moveCoords: params.processes.moveCoords,
+        snapNodes: params.processes.snapNodes,
+        removeBelowBase: params.processes.removeBelowBase,
+        snapNodesToLevel: params.processes.snapNodesToLevel,
+        splitVertical: params.processes.splitVertical,
+        splitIntersecting: params.processes.splitIntersecting,
+        convertShortBeamsToWalls: params.processes.convertShortBeamsToWalls,
+        convertLongWallsToBeams: params.processes.convertLongWallsToBeams,
+        splitWallsHorizontal: params.processes.splitWallsHorizontal
       };
 
       const response = await fetch('http://127.0.0.1:8000/procesar', {
@@ -423,7 +435,24 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, modelData, 
                       type="radio"
                       name="proc_target"
                       checked={params.processes.target === 'RVT'}
-                      onChange={() => setParams(prev => ({ ...prev, processes: { ...prev.processes, target: 'RVT' } }))}
+                      onChange={() => setParams(prev => ({ 
+                        ...prev, 
+                        processes: { 
+                          ...prev.processes, 
+                          target: 'RVT',
+                          removeShort: false,
+                          adjustToGrids: false,
+                          moveModel: false,
+                          snapNodes: false,
+                          removeBelowBase: false,
+                          snapNodesToLevel: false,
+                          splitVertical: false,
+                          splitIntersecting: false,
+                          convertShortBeamsToWalls: false,
+                          convertLongWallsToBeams: false,
+                          splitWallsHorizontal: false
+                        } 
+                      }))}
                       className="w-4 h-4 text-primary focus:ring-primary border-outline-variant cursor-pointer"
                     />
                     <span className="text-sm font-body text-on-surface">RVT</span>
@@ -433,7 +462,24 @@ export const ProcessStep = ({ params, setParams, onProcessCompleted, modelData, 
                       type="radio"
                       name="proc_target"
                       checked={params.processes.target === 'ETABS'}
-                      onChange={() => setParams(prev => ({ ...prev, processes: { ...prev.processes, target: 'ETABS' } }))}
+                      onChange={() => setParams(prev => ({ 
+                        ...prev, 
+                        processes: { 
+                          ...prev.processes, 
+                          target: 'ETABS',
+                          removeShort: true,
+                          adjustToGrids: true,
+                          moveModel: false,
+                          snapNodes: true,
+                          removeBelowBase: true,
+                          snapNodesToLevel: true,
+                          splitVertical: true,
+                          splitIntersecting: true,
+                          convertShortBeamsToWalls: true,
+                          convertLongWallsToBeams: true,
+                          splitWallsHorizontal: true
+                        } 
+                      }))}
                       className="w-4 h-4 text-primary focus:ring-primary border-outline-variant cursor-pointer"
                     />
                     <span className="text-sm font-body text-on-surface">ETABS</span>

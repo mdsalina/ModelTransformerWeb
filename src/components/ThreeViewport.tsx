@@ -88,6 +88,75 @@ export const ThreeViewport = ({
   const hasFitCameraRef = useRef<boolean>(false);
   const targetCameraPosition = useRef<THREE.Vector3 | null>(null);
 
+  const getModelDataBBox = (): { center: THREE.Vector3; maxDim: number } => {
+    const bbox = new THREE.Box3();
+    if (!modelData) return { center: new THREE.Vector3(0, 0, 0), maxDim: 40 };
+
+    const tx = activeStep === 'process' ? processTranslation.dx : 0;
+    const ty = activeStep === 'process' ? processTranslation.dy : 0;
+    const tz = activeStep === 'process' ? processTranslation.dz : 0;
+    const rotAlpha = activeStep === 'process' ? (processTranslation.alpha * Math.PI) / 180 : 0;
+
+    const convertCoords = (x: number, y: number, z: number): THREE.Vector3 => {
+      let rx = x;
+      let ry = y;
+      if (rotAlpha !== 0) {
+        rx = x * Math.cos(rotAlpha) - y * Math.sin(rotAlpha);
+        ry = x * Math.sin(rotAlpha) + y * Math.cos(rotAlpha);
+      }
+      return new THREE.Vector3(rx + tx, z + tz, -ry - ty);
+    };
+
+    let hasPoints = false;
+
+    if (modelData.elements.walls) {
+      modelData.elements.walls.forEach(wall => {
+        if (wall.location.outline) {
+          wall.location.outline.forEach(p => {
+            bbox.expandByPoint(convertCoords(p[0], p[1], p[2]));
+            bbox.expandByPoint(convertCoords(p[0], p[1], p[2] + wall.location.height));
+            hasPoints = true;
+          });
+        }
+      });
+    }
+
+    if (modelData.elements.beams) {
+      modelData.elements.beams.forEach(beam => {
+        if (beam.location.start) {
+          bbox.expandByPoint(convertCoords(beam.location.start[0], beam.location.start[1], beam.location.start[2]));
+          hasPoints = true;
+        }
+        if (beam.location.end) {
+          bbox.expandByPoint(convertCoords(beam.location.end[0], beam.location.end[1], beam.location.end[2]));
+          hasPoints = true;
+        }
+      });
+    }
+
+    if (modelData.elements.slabs) {
+      modelData.elements.slabs.forEach(slab => {
+        if (slab.location.outline) {
+          slab.location.outline.forEach(p => {
+            bbox.expandByPoint(convertCoords(p[0], p[1], p[2]));
+            hasPoints = true;
+          });
+        }
+      });
+    }
+
+    const center = new THREE.Vector3();
+    let maxDim = 40;
+
+    if (hasPoints) {
+      bbox.getCenter(center);
+      const size = bbox.getSize(new THREE.Vector3());
+      maxDim = Math.max(size.x, size.y, size.z);
+    }
+
+    return { center, maxDim };
+  };
+
   // Direct references to lights and grid helpers to guarantee toggling
   const gridHelperRef = useRef<THREE.GridHelper | null>(null);
   const dirLightRef = useRef<THREE.DirectionalLight | null>(null);
@@ -293,23 +362,65 @@ export const ThreeViewport = ({
         const currentLevel = modelData.levels.find(l => l.id === selectedLevelId);
         const elevation = currentLevel ? currentLevel.elevation : 0;
 
-        // Keep current X and Z of the target to prevent jumping horizontally
-        const target = controls.target.clone();
-        target.y = elevation;
+        if (prevGridName !== 'none') {
+          // Transitioning from elevation to a floor plan. Frame/fit the plan synchronously.
+          const { center, maxDim } = getModelDataBBox();
 
-        // Update controls target immediately so camera looks at the correct height
-        controls.target.copy(target);
-
-        // Reset zoom only if we transitioned from 3D view
-        if (prevLevelId === '3d') {
+          controls.target.set(center.x, elevation, center.z);
           orthoCamera.zoom = 1;
-          orthoCamera.position.set(target.x, elevation + 100, target.z + 0.001);
+          orthoCamera.position.set(center.x, elevation + 100, center.z + 0.001);
+
+          if (mountRef.current) {
+            const aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
+            const dynamicFrustumSize = maxDim * 1.5;
+            orthoCamera.left = (-dynamicFrustumSize * aspect) / 2;
+            orthoCamera.right = (dynamicFrustumSize * aspect) / 2;
+            orthoCamera.top = dynamicFrustumSize / 2;
+            orthoCamera.bottom = -dynamicFrustumSize / 2;
+          }
+          orthoCamera.lookAt(controls.target);
+          orthoCamera.updateProjectionMatrix();
         } else {
-          // Keep current horizontal position and zoom, just update elevation height
-          orthoCamera.position.y = elevation + 100;
+          // Keep current X and Z of the target to prevent jumping horizontally when changing between plans
+          const target = controls.target.clone();
+          target.y = elevation;
+
+          // Update controls target immediately so camera looks at the correct height
+          controls.target.copy(target);
+
+          // Reset zoom only if we transitioned from 3D view
+          if (prevLevelId === '3d') {
+            orthoCamera.zoom = 1;
+            orthoCamera.position.set(target.x, elevation + 100, target.z + 0.001);
+            
+            // Re-apply full plan framing bounds if transitioning from 3D
+            let maxDim = 40;
+            let modelGroup: THREE.Object3D | undefined;
+            sceneRef.current?.traverse((obj) => {
+              if (obj.name === 'bim_model_element') {
+                modelGroup = obj;
+              }
+            });
+            if (modelGroup && modelGroup.children.length > 0) {
+              const bbox = new THREE.Box3().setFromObject(modelGroup);
+              const size = bbox.getSize(new THREE.Vector3());
+              maxDim = Math.max(size.x, size.y, size.z);
+            }
+            if (mountRef.current) {
+              const aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
+              const dynamicFrustumSize = maxDim * 1.5;
+              orthoCamera.left = (-dynamicFrustumSize * aspect) / 2;
+              orthoCamera.right = (dynamicFrustumSize * aspect) / 2;
+              orthoCamera.top = dynamicFrustumSize / 2;
+              orthoCamera.bottom = -dynamicFrustumSize / 2;
+            }
+          } else {
+            // Keep current horizontal position and zoom, just update elevation height
+            orthoCamera.position.y = elevation + 100;
+          }
+          orthoCamera.lookAt(target);
+          orthoCamera.updateProjectionMatrix();
         }
-        orthoCamera.lookAt(target);
-        orthoCamera.updateProjectionMatrix();
       }
 
       targetCameraPosition.current = null; // direct assignment, no perspective lerping across cameras
@@ -1537,20 +1648,13 @@ export const ThreeViewport = ({
     }
   }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation?.dx, processTranslation?.dy, processTranslation?.dz, processTranslation?.alpha, selectedLevelId, selectedGridName, enableTransparency, selectedElements, hiddenElementIds, gridToleranceMeters, visualizationMode]);
 
-  const resetZoomAndFrame = () => {
+  function resetZoomAndFrame() {
     console.log('[resetZoomAndFrame] Triggered. selectedLevelId:', selectedLevelId, 'selectedGridName:', selectedGridName);
     const scene = sceneRef.current;
     if (!scene) {
       console.warn('[resetZoomAndFrame] Early return: scene is null');
       return;
     }
-
-    let modelGroup: THREE.Object3D | undefined;
-    scene.traverse((obj) => {
-      if (obj.name === 'bim_model_element') {
-        modelGroup = obj;
-      }
-    });
 
     const camera = cameraRef.current;
     const orthoCamera = orthoCameraRef.current;
@@ -1561,18 +1665,8 @@ export const ThreeViewport = ({
       return;
     }
 
-    // Pre-calculate bbox ONLY if modelGroup exists and has children
-    let center = new THREE.Vector3(0, 0, 0);
-    let maxDim = 40; // fallback default
-    if (modelGroup && modelGroup.children.length > 0) {
-      const bbox = new THREE.Box3().setFromObject(modelGroup);
-      bbox.getCenter(center);
-      const size = bbox.getSize(new THREE.Vector3());
-      maxDim = Math.max(size.x, size.y, size.z);
-      console.log('[resetZoomAndFrame] Calculated bbox center:', center, 'maxDim:', maxDim);
-    } else {
-      console.log('[resetZoomAndFrame] modelGroup is empty or not found, using fallbacks');
-    }
+    const { center, maxDim } = getModelDataBBox();
+    console.log('[resetZoomAndFrame] Calculated bbox center:', center, 'maxDim:', maxDim);
 
     if (selectedLevelId === '3d' && selectedGridName === 'none') {
       console.log('[resetZoomAndFrame] Entering 3D Perspective branch');

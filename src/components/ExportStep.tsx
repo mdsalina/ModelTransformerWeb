@@ -27,6 +27,7 @@ export const ExportStep = ({ exportState, setExportState, modelData }: ExportSte
   // ETABS Export Parameter States
   const [exportMaterials, setExportMaterials] = useState(false);
   const [modifySectionNames, setModifySectionNames] = useState(true);
+  const [saveJson, setSaveJson] = useState(false);
 
   const handleFormatChange = (format: ExportState['format']) => {
     if (downloading) return;
@@ -153,6 +154,47 @@ export const ExportStep = ({ exportState, setExportState, modelData }: ExportSte
     };
   };
 
+  const saveJsonToFile = async (data: JsonModelData) => {
+    const rawName = data.project_info?.name || 'modelo';
+    const cleanName = rawName.replace(/[^a-zA-Z0-9_.-]/g, '_');
+    const defaultName = `${cleanName}_processed.json`;
+    
+    // Intentar usar File System Access API para elegir la carpeta y nombre
+    if ('showSaveFilePicker' in window) {
+      try {
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: defaultName,
+          types: [{
+            description: 'JSON File',
+            accept: { 'application/json': ['.json'] }
+          }]
+        });
+        const writable = await handle.createWritable();
+        await writable.write(JSON.stringify(data, null, 4));
+        await writable.close();
+        return;
+      } catch (err: any) {
+        // Si el usuario cancela, no hacemos nada
+        if (err.name === 'AbortError') {
+          return;
+        }
+        console.error('Error con showSaveFilePicker, usando fallback de descarga:', err);
+      }
+    }
+    
+    // Fallback: descarga normal del navegador
+    const jsonString = JSON.stringify(data, null, 4);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = defaultName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const handleEtabsModeling = async () => {
     setIsModalOpen(true);
     setModalStatus('connecting');
@@ -203,6 +245,10 @@ export const ExportStep = ({ exportState, setExportState, modelData }: ExportSte
         setModalStatus('modeling_success');
         setDownloadCompleted(true);
         setExportState(prev => ({ ...prev, completed: true }));
+        
+        if (saveJson && modelData) {
+          await saveJsonToFile(modelData);
+        }
       } else {
         throw new Error(result.message || 'Error desconocido al inyectar datos en ETABS.');
       }
@@ -393,6 +439,30 @@ export const ExportStep = ({ exportState, setExportState, modelData }: ExportSte
                     </span>
                     <span className="font-body text-[11px] leading-relaxed text-on-surface-variant">
                       Ajusta el nombre de las secciones a los nombres definidos en el template de Etabs.
+                    </span>
+                  </label>
+                </div>
+
+                {/* Guardar JSON */}
+                <div 
+                  className="flex items-start gap-3 cursor-pointer group"
+                  title="Permite también guardar un archivo Json con la información del modelo en una carpeta que definas"
+                >
+                  <div className="pt-0.5">
+                    <input
+                      type="checkbox"
+                      id="save_json_checkbox"
+                      checked={saveJson}
+                      onChange={(e) => setSaveJson(e.target.checked)}
+                      className="w-4 h-4 text-primary bg-surface-container-lowest border-outline rounded focus:ring-primary focus:ring-2 cursor-pointer"
+                    />
+                  </div>
+                  <label htmlFor="save_json_checkbox" className="flex flex-col flex-1 gap-0.5 cursor-pointer">
+                    <span className="font-body text-xs font-bold text-on-surface group-hover:text-primary transition-colors">
+                      Guardar JSON
+                    </span>
+                    <span className="font-body text-[11px] leading-relaxed text-on-surface-variant">
+                      Permite también guardar un archivo Json con la información del modelo en una carpeta que definas.
                     </span>
                   </label>
                 </div>
