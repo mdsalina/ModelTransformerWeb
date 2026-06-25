@@ -24,6 +24,10 @@ export const ExportStep = ({ exportState, setExportState, modelData }: ExportSte
   const [errorDetail, setErrorDetail] = useState('');
   const [modelingSummary, setModelingSummary] = useState<{ stories: number; materials: number; sections: number; frames: number; shells: number } | null>(null);
 
+  // ETABS Export Parameter States
+  const [exportMaterials, setExportMaterials] = useState(false);
+  const [modifySectionNames, setModifySectionNames] = useState(true);
+
   const handleFormatChange = (format: ExportState['format']) => {
     if (downloading) return;
     setExportState(prev => ({
@@ -176,7 +180,9 @@ export const ExportStep = ({ exportState, setExportState, modelData }: ExportSte
 
       // Map modelData to the layout expected by local_etabs_writer.py
       const payload = {
-        modelData: mapToEtabsPayload(modelData)
+        modelData: mapToEtabsPayload(modelData),
+        exportMaterials,
+        modifySectionNames
       };
 
       // 3. Send payload to local agent modelar endpoint
@@ -336,6 +342,64 @@ export const ExportStep = ({ exportState, setExportState, modelData }: ExportSte
               </label>
             </div>
           </div>
+
+          {/* Opciones adicionales para ETABS */}
+          {exportState.format === 'edb' && (
+            <div className="flex flex-col gap-4 mt-2 border-t border-outline-variant/15 pt-4">
+              <h3 className="font-body text-sm font-semibold text-on-surface">Opciones de ETABS</h3>
+              <div className="flex flex-col gap-4">
+                
+                {/* Exportar Materiales */}
+                <div 
+                  className="flex items-start gap-3 cursor-pointer group"
+                  title="Si no se selecciona se considerarán todos los elementos con el mismo material"
+                >
+                  <div className="pt-0.5">
+                    <input
+                      type="checkbox"
+                      id="export_materials_checkbox"
+                      checked={exportMaterials}
+                      onChange={(e) => setExportMaterials(e.target.checked)}
+                      className="w-4 h-4 text-primary bg-surface-container-lowest border-outline rounded focus:ring-primary focus:ring-2 cursor-pointer"
+                    />
+                  </div>
+                  <label htmlFor="export_materials_checkbox" className="flex flex-col flex-1 gap-0.5 cursor-pointer">
+                    <span className="font-body text-xs font-bold text-on-surface group-hover:text-primary transition-colors">
+                      Exportar Materiales
+                    </span>
+                    <span className="font-body text-[11px] leading-relaxed text-on-surface-variant">
+                      Si no se selecciona se considerarán todos los elementos con el mismo material.
+                    </span>
+                  </label>
+                </div>
+
+                {/* Modificar Nombre Secciones */}
+                <div 
+                  className="flex items-start gap-3 cursor-pointer group"
+                  title="Ajusta el nombre de las secciones a los nombres definidos en el template de Etabs"
+                >
+                  <div className="pt-0.5">
+                    <input
+                      type="checkbox"
+                      id="modify_sections_checkbox"
+                      checked={modifySectionNames}
+                      onChange={(e) => setModifySectionNames(e.target.checked)}
+                      className="w-4 h-4 text-primary bg-surface-container-lowest border-outline rounded focus:ring-primary focus:ring-2 cursor-pointer"
+                    />
+                  </div>
+                  <label htmlFor="modify_sections_checkbox" className="flex flex-col flex-1 gap-0.5 cursor-pointer">
+                    <span className="font-body text-xs font-bold text-on-surface group-hover:text-primary transition-colors">
+                      Modificar Nombre Secciones
+                    </span>
+                    <span className="font-body text-[11px] leading-relaxed text-on-surface-variant">
+                      Ajusta el nombre de las secciones a los nombres definidos en el template de Etabs.
+                    </span>
+                  </label>
+                </div>
+
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Final Action / Download Button */}
