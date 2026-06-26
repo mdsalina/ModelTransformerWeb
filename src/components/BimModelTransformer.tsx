@@ -7,6 +7,7 @@ import { ProcessStep } from './ProcessStep';
 import { ExportStep } from './ExportStep';
 import { ThreeViewport } from './ThreeViewport';
 import { ArrowForwardIcon, MenuIcon, CloseIcon } from './Icons';
+import { cleanGridsInModel } from '../utils/gridUtils';
 
 const DEFAULT_FILTERS: FiltersState = {
   testMode: false,
@@ -78,19 +79,19 @@ export const BimModelTransformer = () => {
       snapThreshold: 20
     },
     processes: {
-      target: 'RVT',
-      removeShort: false,
-      adjustToGrids: false,
-      moveModel: true,
+      target: 'ETABS',
+      removeShort: true,
+      adjustToGrids: true,
+      moveModel: false,
       moveCoords: { dx: 0.0, dy: 0.0, dz: 0.0, alpha: 0.0 },
-      snapNodes: false,
-      removeBelowBase: false,
-      snapNodesToLevel: false,
-      splitVertical: false,
-      splitIntersecting: false,
-      convertShortBeamsToWalls: false,
-      convertLongWallsToBeams: false,
-      splitWallsHorizontal: false
+      snapNodes: true,
+      removeBelowBase: true,
+      snapNodesToLevel: true,
+      splitVertical: true,
+      splitIntersecting: true,
+      convertShortBeamsToWalls: true,
+      convertLongWallsToBeams: true,
+      splitWallsHorizontal: true
     }
   });
 
@@ -226,11 +227,12 @@ export const BimModelTransformer = () => {
 
   const handleFileUploaded = (file: FileDetails, data: JsonModelData) => {
     setFileDetails(file);
-    setModelData(data);
-    setOriginalModel(data);
+    const cleanedData = cleanGridsInModel(data);
+    setModelData(cleanedData);
+    setOriginalModel(cleanedData);
     setProcessedModel(null);
     setActiveModelType('original');
-    updateFiltersAndLimitsFromModel(data);
+    updateFiltersAndLimitsFromModel(cleanedData);
   };
 
   const handleClearFile = () => {
@@ -245,11 +247,12 @@ export const BimModelTransformer = () => {
   };
 
   const handleProcessCompleted = (updatedModelData: JsonModelData) => {
+    const cleanedData = cleanGridsInModel(updatedModelData);
     setOriginalModel(modelData);
-    setProcessedModel(updatedModelData);
+    setProcessedModel(cleanedData);
     setActiveModelType('processed');
-    setModelData(updatedModelData);
-    updateFiltersAndLimitsFromModel(updatedModelData, filters);
+    setModelData(cleanedData);
+    updateFiltersAndLimitsFromModel(cleanedData, filters);
   };
 
   const handleSwitchModel = (type: 'original' | 'processed') => {

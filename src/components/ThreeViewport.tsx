@@ -181,6 +181,12 @@ export const ThreeViewport = ({
   const selectedElement = selectedElements[selectedElements.length - 1] || null;
   const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null);
   const [optionPalette, setOptionPalette] = useState<{ x: number; y: number; visible: boolean; elementId: string } | null>(null);
+  const [hoverTooltip, setHoverTooltip] = useState<{
+    visible: boolean;
+    text: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   // Visualization settings
   const [gridToleranceMeters, setGridToleranceMeters] = useState<number>(0.10);
@@ -359,7 +365,13 @@ export const ThreeViewport = ({
       };
 
       if (hasLevelChanged) {
-        const currentLevel = modelData.levels.find(l => l.id === selectedLevelId);
+        let currentLevel = modelData.levels.find(l => l.id === selectedLevelId);
+        if (!currentLevel && prevModelForCam) {
+          const oldLevel = prevModelForCam.levels.find(l => l.id === selectedLevelId);
+          if (oldLevel) {
+            currentLevel = modelData.levels.find(l => l.name === oldLevel.name);
+          }
+        }
         const elevation = currentLevel ? currentLevel.elevation : 0;
 
         if (prevGridName !== 'none') {
@@ -529,6 +541,7 @@ export const ThreeViewport = ({
     let onPointerUp: ((event: PointerEvent) => void) | null = null;
     let onPointerDownCapture: ((event: PointerEvent) => void) | null = null;
     let onPointerMove: ((event: PointerEvent) => void) | null = null;
+    let onPointerOut: (() => void) | null = null;
 
     try {
       // 1. Create Scene
@@ -758,6 +771,64 @@ export const ThreeViewport = ({
             currentX: event.clientX,
             currentY: event.clientY
           } : null);
+          setHoverTooltip(null);
+          return;
+        }
+
+        const activeCamera = activeCameraRef.current;
+        if (!renderer || !scene || !activeCamera) return;
+
+        const rect = renderer.domElement.getBoundingClientRect();
+        const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+        const raycaster = new THREE.Raycaster();
+        raycaster.params.Line = { threshold: 0.3 };
+        raycaster.setFromCamera(new THREE.Vector2(x, y), activeCamera);
+
+        const intersects = raycaster.intersectObjects(scene.children, true);
+        
+        let hoveredItem: { name: string; type: string } | null = null;
+        for (const intersect of intersects) {
+          let current: THREE.Object3D | null = intersect.object;
+          while (current) {
+            if (
+              current.userData &&
+              (current.userData.type === 'grid_line' || current.userData.type === 'level_line')
+            ) {
+              hoveredItem = {
+                name: current.userData.name,
+                type: current.userData.type
+              };
+              break;
+            }
+            current = current.parent;
+          }
+          if (hoveredItem) break;
+        }
+
+        if (hoveredItem) {
+          const tooltipX = event.clientX - rect.left;
+          const tooltipY = event.clientY - rect.top;
+          const text = hoveredItem.type === 'grid_line' ? `Grilla: ${hoveredItem.name}` : `Nivel: ${hoveredItem.name}`;
+          
+          setHoverTooltip(prev => {
+            if (prev && prev.text === text && Math.abs(prev.x - tooltipX) < 2 && Math.abs(prev.y - tooltipY) < 2) {
+              return prev;
+            }
+            return {
+              visible: true,
+              text,
+              x: tooltipX,
+              y: tooltipY
+            };
+          });
+          renderer.domElement.style.cursor = 'pointer';
+        } else {
+          setHoverTooltip(null);
+          if (renderer.domElement.style.cursor === 'pointer') {
+            renderer.domElement.style.cursor = 'default';
+          }
         }
       };
 
@@ -895,6 +966,11 @@ export const ThreeViewport = ({
       renderer.domElement.addEventListener('pointerdown', onPointerDown);
       renderer.domElement.addEventListener('pointermove', onPointerMove);
       renderer.domElement.addEventListener('pointerup', onPointerUp);
+      
+      onPointerOut = () => {
+        setHoverTooltip(null);
+      };
+      renderer.domElement.addEventListener('pointerout', onPointerOut);
 
     } catch (e: any) {
       console.error('Three.js Init Error:', e);
@@ -916,6 +992,7 @@ export const ThreeViewport = ({
         if (onPointerDown) renderer.domElement.removeEventListener('pointerdown', onPointerDown);
         if (onPointerMove) renderer.domElement.removeEventListener('pointermove', onPointerMove);
         if (onPointerUp) renderer.domElement.removeEventListener('pointerup', onPointerUp);
+        if (onPointerOut) renderer.domElement.removeEventListener('pointerout', onPointerOut);
       }
 
       if (renderer && renderer.domElement && mountRef.current) {
@@ -1075,7 +1152,14 @@ export const ThreeViewport = ({
         // 1. Draw Grids
         if (showGrids && filters.elements.grillas && modelData.grids) {
           try {
-            const gridMaterial = new THREE.LineBasicMaterial({ color: 0x737686, linewidth: 1 });
+            const gridMaterial = new THREE.LineDashedMaterial({
+              color: 0x737686,
+              linewidth: 1,
+              dashSize: 0.8,
+              gapSize: 0.4,
+              transparent: true,
+              opacity: 0.5
+            });
             modelData.grids.forEach((grid) => {
               // Offset elevation slightly above floor plane to avoid z-fighting with slabs
               const elevationOffset = activeLevelElevation + 0.01;
@@ -1084,6 +1168,12 @@ export const ThreeViewport = ({
               const points = [p1, p2];
               const geometry = new THREE.BufferGeometry().setFromPoints(points);
               const line = new THREE.Line(geometry, gridMaterial);
+              line.computeLineDistances();
+              line.name = 'bim_model_element';
+              line.userData = {
+                type: 'grid_line',
+                name: grid.name
+              };
               modelGroup.add(line);
             });
           } catch (e) {
@@ -1495,12 +1585,14 @@ export const ThreeViewport = ({
         // 5. Draw Level Lines in Elevation View
         if (selectedGrid && modelData.levels) {
           try {
-            // Horizontal dashed lines for each level along the grid line segment
+            // Horizontal dashed lines for each level along the grid line segment (with 50% transparency)
             const lineMaterial = new THREE.LineDashedMaterial({
               color: 0x475569, // Slate grey
               dashSize: 0.8,
               gapSize: 0.4,
-              linewidth: 1
+              linewidth: 1,
+              transparent: true,
+              opacity: 0.5
             });
 
             const p1_mid = convertCoords(selectedGrid.p1[0], selectedGrid.p1[1], 0);
@@ -1534,24 +1626,46 @@ export const ThreeViewport = ({
               line.computeLineDistances();
               
               line.name = 'bim_model_element';
+              line.userData = {
+                type: 'level_line',
+                name: lvl.name
+              };
               modelGroup.add(line);
 
               // Circular bubble at start of the line (p1)
               const circleGeo1 = new THREE.CircleGeometry(0.15, 16);
-              const circleMat1 = new THREE.MeshBasicMaterial({ color: 0x475569, side: THREE.DoubleSide });
+              const circleMat1 = new THREE.MeshBasicMaterial({
+                color: 0x475569,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.5
+              });
               const circleMesh1 = new THREE.Mesh(circleGeo1, circleMat1);
               circleMesh1.position.copy(p1);
               circleMesh1.lookAt(new THREE.Vector3().addVectors(p1, normal));
               circleMesh1.name = 'bim_model_element';
+              circleMesh1.userData = {
+                type: 'level_line',
+                name: lvl.name
+              };
               modelGroup.add(circleMesh1);
 
               // Circular bubble at end of the line (p2)
               const circleGeo2 = new THREE.CircleGeometry(0.15, 16);
-              const circleMat2 = new THREE.MeshBasicMaterial({ color: 0x475569, side: THREE.DoubleSide });
+              const circleMat2 = new THREE.MeshBasicMaterial({
+                color: 0x475569,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.5
+              });
               const circleMesh2 = new THREE.Mesh(circleGeo2, circleMat2);
               circleMesh2.position.copy(p2);
               circleMesh2.lookAt(new THREE.Vector3().addVectors(p2, normal));
               circleMesh2.name = 'bim_model_element';
+              circleMesh2.userData = {
+                type: 'level_line',
+                name: lvl.name
+              };
               modelGroup.add(circleMesh2);
             });
           } catch (e) {
@@ -1560,8 +1674,8 @@ export const ThreeViewport = ({
         }
       }
 
-      // Auto-fit camera around model boundaries on first load
-      if (modelGroup.children.length > 0 && !hasFitCameraRef.current) {
+      // Auto-fit camera around model boundaries on first load (only in 3D view)
+      if (selectedLevelId === '3d' && selectedGridName === 'none' && modelGroup.children.length > 0 && !hasFitCameraRef.current) {
         const bbox = new THREE.Box3().setFromObject(modelGroup);
         const size = bbox.getSize(new THREE.Vector3());
         const center = bbox.getCenter(new THREE.Vector3());
@@ -2591,6 +2705,24 @@ export const ThreeViewport = ({
               </button>
             </div>
           </div>
+        </div>
+      )}
+      
+      {/* Floating Hover Tooltip for Grids and Levels */}
+      {hoverTooltip && hoverTooltip.visible && (
+        <div
+          className="absolute pointer-events-none z-[1000] rounded px-2.5 py-1 text-[11px] font-bold font-body shadow-lg border backdrop-blur-md"
+          style={{
+            left: `${hoverTooltip.x}px`,
+            top: `${hoverTooltip.y}px`,
+            transform: 'translate(-50%, -130%)',
+            backgroundColor: 'rgba(15, 23, 42, 0.95)',
+            color: '#ffffff',
+            borderColor: 'rgba(255, 255, 255, 0.15)',
+            whiteSpace: 'nowrap'
+          }}
+        >
+          {hoverTooltip.text}
         </div>
       )}
     </div>
