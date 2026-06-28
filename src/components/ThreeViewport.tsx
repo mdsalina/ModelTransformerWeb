@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -181,6 +181,7 @@ export const ThreeViewport = ({
   const selectedElement = selectedElements[selectedElements.length - 1] || null;
   const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null);
   const [optionPalette, setOptionPalette] = useState<{ x: number; y: number; visible: boolean; elementId: string } | null>(null);
+  const [isInvertedVisualization, setIsInvertedVisualization] = useState(false);
   const [hoverTooltip, setHoverTooltip] = useState<{
     visible: boolean;
     text: string;
@@ -220,6 +221,22 @@ export const ThreeViewport = ({
     hiddenElementIdsRef.current = hiddenElementIds;
   }, [hiddenElementIds]);
 
+  const selectedElementsRef = useRef<{ id: string; type: 'wall' | 'beam' | 'slab'; data: any }[]>([]);
+  useEffect(() => {
+    selectedElementsRef.current = selectedElements;
+  }, [selectedElements]);
+
+  const isInvertedVisualizationRef = useRef<boolean>(false);
+  useEffect(() => {
+    isInvertedVisualizationRef.current = isInvertedVisualization;
+  }, [isInvertedVisualization]);
+
+  useEffect(() => {
+    if (hiddenElementIds.size === 0) {
+      setIsInvertedVisualization(false);
+    }
+  }, [hiddenElementIds]);
+
   // Ref to avoid stale closures in the single-instance animation loop
   const selectedLevelIdRef = useRef<string>('3d');
   useEffect(() => {
@@ -254,6 +271,75 @@ export const ThreeViewport = ({
   };
   const prevModelDataRef = useRef<JsonModelData | null>(null);
   const prevModelDataRefForCamera = useRef<JsonModelData | null>(null);
+
+  const hideSelectedElements = useCallback(() => {
+    if (selectedElements.length === 0) return;
+    const newHidden = new Set(hiddenElementIds);
+    selectedElements.forEach(el => newHidden.add(el.id));
+    setHiddenElementIds(newHidden);
+    setSelectedElements([]);
+    setOptionPalette(null);
+  }, [selectedElements, hiddenElementIds, setHiddenElementIds]);
+
+  const isolateSelectedElements = useCallback(() => {
+    if (selectedElements.length === 0) return;
+    const newHidden = new Set<string>(hiddenElementIds);
+    sceneInstance?.traverse((obj) => {
+      if (obj.userData && obj.userData.id && (obj.userData.type === 'wall' || obj.userData.type === 'beam' || obj.userData.type === 'slab')) {
+        if (!selectedElements.some(el => el.id === obj.userData.id)) {
+          newHidden.add(obj.userData.id);
+        }
+      }
+    });
+    setHiddenElementIds(newHidden);
+    setSelectedElements(selectedElements); // refresh selection
+    setOptionPalette(null);
+  }, [selectedElements, hiddenElementIds, sceneInstance, setHiddenElementIds]);
+
+  const unhideSelectedElements = useCallback(() => {
+    if (selectedElements.length === 0) return;
+    const newHidden = new Set(hiddenElementIds);
+    selectedElements.forEach(el => newHidden.delete(el.id));
+    setHiddenElementIds(newHidden);
+    setSelectedElements([]);
+    setOptionPalette(null);
+  }, [selectedElements, hiddenElementIds, setHiddenElementIds]);
+
+  // Keyboard shortcuts listener for H and A
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target && 
+        (target.tagName === 'INPUT' || 
+         target.tagName === 'TEXTAREA' || 
+         target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.key === 'h' || e.key === 'H') {
+        if (selectedElements.length > 0) {
+          e.preventDefault();
+          if (isInvertedVisualization) {
+            unhideSelectedElements();
+          } else {
+            hideSelectedElements();
+          }
+        }
+      } else if (e.key === 'a' || e.key === 'A') {
+        if (selectedElements.length > 0) {
+          e.preventDefault();
+          isolateSelectedElements();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectedElements, hideSelectedElements, isolateSelectedElements, unhideSelectedElements, isInvertedVisualization]);
 
   const handleGridChange = (gridName: string) => {
     setSelectedGridName(gridName);
@@ -858,7 +944,10 @@ export const ThreeViewport = ({
           for (const intersect of intersects) {
             let current: THREE.Object3D | null = intersect.object;
             while (current) {
-              if (current.userData && current.userData.id && !hiddenElementIdsRef.current.has(current.userData.id)) {
+              const isItemVisible = isInvertedVisualizationRef.current
+                ? hiddenElementIdsRef.current.has(current.userData.id)
+                : !hiddenElementIdsRef.current.has(current.userData.id);
+              if (current.userData && current.userData.id && isItemVisible) {
                 hitObject = current;
                 break;
               }
@@ -869,16 +958,40 @@ export const ThreeViewport = ({
 
           if (hitObject) {
             const { id, type, data } = hitObject.userData;
-            setSelectedElements([{ id, type, data }]);
-            setOptionPalette({
-              visible: true,
-              x: event.clientX,
-              y: event.clientY,
-              elementId: id
-            });
+            if (event.ctrlKey) {
+              const currSelected = selectedElementsRef.current;
+              const isAlreadySelected = currSelected.some(el => el.id === id);
+              let nextSelected;
+              if (isAlreadySelected) {
+                nextSelected = currSelected.filter(el => el.id !== id);
+              } else {
+                nextSelected = [...currSelected, { id, type, data }];
+              }
+              setSelectedElements(nextSelected);
+              if (nextSelected.length > 0) {
+                setOptionPalette({
+                  visible: true,
+                  x: event.clientX,
+                  y: event.clientY,
+                  elementId: nextSelected.length === 1 ? nextSelected[0].id : `${nextSelected.length} sel.`
+                });
+              } else {
+                setOptionPalette(null);
+              }
+            } else {
+              setSelectedElements([{ id, type, data }]);
+              setOptionPalette({
+                visible: true,
+                x: event.clientX,
+                y: event.clientY,
+                elementId: id
+              });
+            }
           } else {
-            setSelectedElements([]);
-            setOptionPalette(null);
+            if (!event.ctrlKey) {
+              setSelectedElements([]);
+              setOptionPalette(null);
+            }
           }
         } else {
           // Box Selection
@@ -892,11 +1005,14 @@ export const ThreeViewport = ({
           const found: { id: string; type: 'wall' | 'beam' | 'slab'; data: any }[] = [];
 
           scene.traverse((obj) => {
+            const isItemVisible = isInvertedVisualizationRef.current
+              ? hiddenElementIdsRef.current.has(obj.userData.id)
+              : !hiddenElementIdsRef.current.has(obj.userData.id);
             if (
               obj.userData &&
               obj.userData.id &&
               (obj.userData.type === 'wall' || obj.userData.type === 'beam' || obj.userData.type === 'slab') &&
-              !hiddenElementIdsRef.current.has(obj.userData.id)
+              isItemVisible
             ) {
               const box = new THREE.Box3().setFromObject(obj);
               const min = box.min;
@@ -958,7 +1074,16 @@ export const ThreeViewport = ({
           });
 
           setSelectedElements(found);
-          setOptionPalette(null);
+          if (found.length > 0) {
+            setOptionPalette({
+              visible: true,
+              x: event.clientX,
+              y: event.clientY,
+              elementId: found.length === 1 ? found[0].id : `${found.length} sel.`
+            });
+          } else {
+            setOptionPalette(null);
+          }
         }
       };
 
@@ -1194,7 +1319,10 @@ export const ThreeViewport = ({
 
           modelData.elements.walls.forEach((wall) => {
             try {
-              if (hiddenElementIds.has(wall.revit_id)) return;
+              const isHidden = isInvertedVisualization
+                ? !hiddenElementIds.has(wall.revit_id)
+                : hiddenElementIds.has(wall.revit_id);
+              if (isHidden) return;
 
               // Filter by Level
               if (selectedLevelId !== '3d') {
@@ -1349,7 +1477,10 @@ export const ThreeViewport = ({
 
           modelData.elements.beams.forEach((beam) => {
             try {
-              if (hiddenElementIds.has(beam.revit_id)) return;
+              const isHidden = isInvertedVisualization
+                ? !hiddenElementIds.has(beam.revit_id)
+                : hiddenElementIds.has(beam.revit_id);
+              if (isHidden) return;
 
               if (selectedLevelId !== '3d') {
                 if (beam.level !== selectedLevelId) return;
@@ -1450,7 +1581,10 @@ export const ThreeViewport = ({
 
           modelData.elements.slabs.forEach((slab) => {
             try {
-              if (hiddenElementIds.has(slab.revit_id)) return;
+              const isHidden = isInvertedVisualization
+                ? !hiddenElementIds.has(slab.revit_id)
+                : hiddenElementIds.has(slab.revit_id);
+              if (isHidden) return;
 
               if (selectedLevelId !== '3d') {
                 if (slab.level !== selectedLevelId) return;
@@ -1760,7 +1894,7 @@ export const ThreeViewport = ({
       console.error('Geometry update error:', err);
       setErrorLog(err.message || String(err));
     }
-  }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation?.dx, processTranslation?.dy, processTranslation?.dz, processTranslation?.alpha, selectedLevelId, selectedGridName, enableTransparency, selectedElements, hiddenElementIds, gridToleranceMeters, visualizationMode]);
+  }, [sceneInstance, modelData, filters, showGrids, activeStep, processTranslation?.dx, processTranslation?.dy, processTranslation?.dz, processTranslation?.alpha, selectedLevelId, selectedGridName, enableTransparency, selectedElements, hiddenElementIds, gridToleranceMeters, visualizationMode, isInvertedVisualization]);
 
   function resetZoomAndFrame() {
     console.log('[resetZoomAndFrame] Triggered. selectedLevelId:', selectedLevelId, 'selectedGridName:', selectedGridName);
@@ -2536,38 +2670,36 @@ export const ThreeViewport = ({
           }}
           className="bg-slate-900/95 backdrop-blur-md border border-slate-700/50 rounded-lg p-1.5 shadow-2xl flex items-center space-x-1 animate-fade-in pointer-events-auto select-none min-w-[200px]"
         >
-          <span className="text-[10px] text-gray-400 font-bold px-1.5 border-r border-slate-800">
-            {selectedElements.length === 1 ? optionPalette.elementId : `${selectedElements.length} sel.`}
-          </span>
           <button
-            onClick={() => {
-              const newHidden = new Set(hiddenElementIds);
-              selectedElements.forEach(el => newHidden.add(el.id));
-              setHiddenElementIds(newHidden);
-              setSelectedElements([]);
-              setOptionPalette(null);
-            }}
-            className="text-[10px] text-white hover:bg-red-500/20 hover:text-red-300 px-2 py-1 rounded transition font-medium"
-            title="Ocultar elementos seleccionados en la vista"
+            onClick={() => setShowDebugPanel(true)}
+            className="p-1 text-blue-400 hover:bg-slate-800/80 hover:text-blue-300 rounded border-r border-slate-800 flex items-center justify-center transition-colors pr-2 mr-0.5"
+            title="Activar panel de depuración"
           >
-            Ocultar
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
+              <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 1 1 1.085-1.007l-.04.02a.75.75 0 0 1-1.085 1.008Zm0 4.5.041-.02a.75.75 0 1 1 1.085-1.007l-.04.02a.75.75 0 0 1-1.085 1.008ZM12 22.5c5.799 0 10.5-4.701 10.5-10.5S17.799 1.5 12 1.5 1.5 6.201 1.5 12 6.201 22.5 12 22.5Z" />
+            </svg>
           </button>
+          {isInvertedVisualization ? (
+            <button
+              onClick={unhideSelectedElements}
+              className="text-[10px] text-white hover:bg-green-500/20 hover:text-green-300 px-2 py-1 rounded transition font-medium"
+              title="Desocultar elementos seleccionados (H)"
+            >
+              Desocultar
+            </button>
+          ) : (
+            <button
+              onClick={hideSelectedElements}
+              className="text-[10px] text-white hover:bg-red-500/20 hover:text-red-300 px-2 py-1 rounded transition font-medium"
+              title="Ocultar elementos seleccionados en la vista (H)"
+            >
+              Ocultar
+            </button>
+          )}
           <button
-            onClick={() => {
-              const newHidden = new Set<string>(hiddenElementIds);
-              sceneInstance?.traverse((obj) => {
-                if (obj.userData && obj.userData.id && (obj.userData.type === 'wall' || obj.userData.type === 'beam' || obj.userData.type === 'slab')) {
-                  if (!selectedElements.some(el => el.id === obj.userData.id)) {
-                    newHidden.add(obj.userData.id);
-                  }
-                }
-              });
-              setHiddenElementIds(newHidden);
-              setSelectedElements(selectedElements); // refresh selection
-              setOptionPalette(null);
-            }}
+            onClick={isolateSelectedElements}
             className="text-[10px] text-white hover:bg-blue-500/20 hover:text-blue-300 px-2 py-1 rounded transition font-medium"
-            title="Aislar elementos seleccionados (oculta todo lo demás)"
+            title="Aislar elementos seleccionados (oculta todo lo demás) (A)"
           >
             Aislar
           </button>
@@ -2583,22 +2715,43 @@ export const ThreeViewport = ({
         </div>
       )}
 
-      {/* Restore Hidden Elements Button */}
+      {/* Restore Hidden Elements & Invert View Buttons */}
       {hiddenElementIds.size > 0 && (
-        <button
-          onClick={() => {
-            setHiddenElementIds(new Set());
-            setSelectedElements([]);
-            setOptionPalette(null);
-          }}
-          className="absolute bottom-4 right-16 z-50 bg-amber-600/90 hover:bg-amber-500 text-white backdrop-blur-sm border border-amber-500/50 rounded-lg px-3 py-1.5 shadow-xl text-xs font-semibold flex items-center space-x-1.5 transition"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.43 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-          </svg>
-          <span>Restaurar {hiddenElementIds.size} ocultos</span>
-        </button>
+        <div className="absolute bottom-4 right-16 z-50 flex items-center space-x-2 pointer-events-auto">
+          <button
+            onClick={() => {
+              setIsInvertedVisualization(prev => !prev);
+              setSelectedElements([]);
+              setOptionPalette(null);
+            }}
+            className={`backdrop-blur-sm border rounded-lg px-3 py-1.5 shadow-xl text-xs font-semibold flex items-center space-x-1.5 transition pointer-events-auto ${
+              isInvertedVisualization
+                ? 'bg-blue-600/90 border-blue-500/50 hover:bg-blue-500 text-white'
+                : 'bg-slate-800/90 border-slate-700/50 hover:bg-slate-700 text-gray-200'
+            }`}
+            title="Invertir visualización para ver y gestionar solo los elementos ocultos"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+            </svg>
+            <span>{isInvertedVisualization ? 'Ver todo' : 'Ver ocultos'}</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setHiddenElementIds(new Set());
+              setSelectedElements([]);
+              setOptionPalette(null);
+            }}
+            className="bg-amber-600/90 hover:bg-amber-500 text-white backdrop-blur-sm border border-amber-500/50 rounded-lg px-3 py-1.5 shadow-xl text-xs font-semibold flex items-center space-x-1.5 transition pointer-events-auto"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.43 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+            </svg>
+            <span>Restaurar {hiddenElementIds.size} ocultos</span>
+          </button>
+        </div>
       )}
 
       {/* Settings Modal (Configuración de Visualización) */}
