@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import type { FileDetails, JsonModelData } from '../types';
-import { UploadFileIcon, CheckCircleIcon, SyncIcon } from './Icons';
+import { UploadFileIcon, CheckCircleIcon, SyncIcon, DownloadIcon } from './Icons';
 
 interface UploadStepProps {
   onFileUploaded: (file: FileDetails, data: JsonModelData) => void;
@@ -13,7 +13,67 @@ export const UploadStep = ({ onFileUploaded, fileDetails, onClearFile }: UploadS
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState('');
+  const [activeTab, setActiveTab] = useState<'json' | 'revit'>('json');
+  const [isFetchingRevit, setIsFetchingRevit] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFetchFromRevit = async () => {
+    setIsFetchingRevit(true);
+    setError('');
+    
+    try {
+      const response = await fetch('http://127.0.0.1:18290/api/getRevit');
+      
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error('Aún no se ha exportado el modelo desde Revit. Por favor, abre Revit, corre el conector y vuelve a intentarlo.');
+        } else {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.detail || 'Error al obtener el modelo desde Revit.');
+        }
+      }
+      
+      const parsedData = await response.json() as JsonModelData;
+      
+      if (
+        !parsedData.project_info ||
+        !parsedData.levels ||
+        !parsedData.grids ||
+        !parsedData.sections ||
+        !parsedData.elements
+      ) {
+        throw new Error('El modelo recibido de Revit no contiene la estructura esperada de un modelo BIM (project_info, levels, grids, sections, elements).');
+      }
+      
+      setUploading(true);
+      setProgress(0);
+      
+      const totalSteps = 20;
+      let currentStep = 0;
+      const interval = setInterval(() => {
+        currentStep++;
+        const currentProgress = Math.min((currentStep / totalSteps) * 100, 100);
+        setProgress(currentProgress);
+        
+        if (currentStep >= totalSteps) {
+          clearInterval(interval);
+          setUploading(false);
+          setIsFetchingRevit(false);
+          onFileUploaded({
+            name: "Modelo Revit (Directo)",
+            size: JSON.stringify(parsedData).length,
+            progress: 100,
+            isUploaded: true,
+            format: 'JSON',
+          }, parsedData);
+        }
+      }, 50);
+      
+    } catch (err: any) {
+      setIsFetchingRevit(false);
+      setError(err.message || 'Error de conexión con el agente local. Asegúrese de que el servidor está corriendo en el puerto 18290.');
+    }
+  };
 
   const processFile = (file: File) => {
     const fileName = file.name;
@@ -122,12 +182,40 @@ export const UploadStep = ({ onFileUploaded, fileDetails, onClearFile }: UploadS
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8 relative z-10 w-full max-w-5xl mx-auto select-none">
-      <div className="text-center mb-12">
+      <div className="text-center mb-6">
         <h1 className="font-headline text-4xl font-extrabold text-on-surface mb-3 tracking-tight">Cargar archivo</h1>
         <p className="font-body text-on-surface-variant text-lg">
-          Arrastra y suelta tu archivo de modelo aquí o haz clic para explorar.
+          Elige un método para cargar tu modelo BIM.
         </p>
       </div>
+
+      {/* Selector de opciones / Tabs */}
+      {!uploading && !fileDetails && (
+        <div className="flex bg-surface-container-high/65 backdrop-blur-md p-1.5 rounded-xl border border-outline-variant/15 shadow-sm mb-8 relative z-10 w-fit">
+          <button
+            onClick={() => { setActiveTab('json'); setError(''); }}
+            className={`px-6 py-2.5 rounded-lg text-sm font-semibold tracking-tight transition-all duration-200 select-none flex items-center gap-2 ${
+              activeTab === 'json'
+                ? 'bg-[#3b82f6] text-white shadow-sm'
+                : 'text-[#191b23]/70 hover:text-[#191b23] hover:bg-surface-container-highest/50'
+            }`}
+          >
+            <UploadFileIcon className="w-4 h-4" />
+            <span>Cargar JSON</span>
+          </button>
+          <button
+            onClick={() => { setActiveTab('revit'); setError(''); }}
+            className={`px-6 py-2.5 rounded-lg text-sm font-semibold tracking-tight transition-all duration-200 select-none flex items-center gap-2 ${
+              activeTab === 'revit'
+                ? 'bg-[#3b82f6] text-white shadow-sm'
+                : 'text-[#191b23]/70 hover:text-[#191b23] hover:bg-surface-container-highest/50'
+            }`}
+          >
+            <DownloadIcon className="w-4 h-4" />
+            <span>Obtener de Revit</span>
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="w-full mb-4 p-4 text-sm bg-error-container text-on-error-container rounded-lg border border-error/10 text-center">
@@ -137,58 +225,102 @@ export const UploadStep = ({ onFileUploaded, fileDetails, onClearFile }: UploadS
 
       {/* Upload Area / Progress Display */}
       {!uploading && !fileDetails ? (
-        <div 
-          onClick={triggerFileInput}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          className={`w-full bg-surface-container-lowest rounded-xl p-12 flex flex-col items-center justify-center cursor-pointer transition-all duration-300 hover:bg-surface-container-low border border-outline-variant/15 relative group overflow-hidden ${
-            isDragOver ? 'ring-2 ring-primary bg-surface-container-low' : ''
-          }`} 
-          style={{ minHeight: '400px', boxShadow: '0 8px 32px rgba(25, 27, 35, 0.02)' }}
-        >
-          {/* Inner Tonal Nesting */}
-          <div className="absolute inset-4 rounded-lg bg-surface-container pointer-events-none opacity-20 group-hover:opacity-40 transition-opacity"></div>
-          
-          <div className="bg-primary-fixed/30 p-6 rounded-full mb-6 relative z-10 group-hover:scale-110 transition-transform duration-300 text-primary">
-            <UploadFileIcon className="w-12 h-12" />
-          </div>
-          
-          <h3 className="font-headline text-xl font-bold text-on-surface mb-2 relative z-10">
-            Seleccionar archivo
-          </h3>
-          <p className="font-body text-on-surface-variant text-sm mb-8 relative z-10 text-center max-w-md">
-            Formatos compatibles: .json. Tamaño máximo recomendado 500MB.
-          </p>
-
-          {/* Supported Formats Pills */}
-          <div className="flex flex-wrap gap-4 justify-center relative z-10">
-            {['.JSON'].map((ext) => (
-              <div key={ext} className="px-4 py-2 bg-surface-container-highest rounded-full flex items-center gap-2">
-                <span className="font-label text-xs font-semibold text-on-surface-variant tracking-wider uppercase">
-                  {ext}
-                </span>
-              </div>
-            ))}
-          </div>
-
-          {/* Input file */}
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={handleFileChange} 
-            className="hidden" 
-            accept=".json"
-          />
-
-          {/* Overlay for Drop state */}
-          {isDragOver && (
-            <div className="absolute inset-0 bg-primary/5 flex items-center justify-center z-20 border-2 border-dashed border-primary rounded-xl">
-              <span className="font-headline text-primary font-bold text-xl">Suelte el archivo aquí</span>
+        activeTab === 'json' ? (
+          <div 
+            onClick={triggerFileInput}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`w-full bg-surface-container-lowest rounded-xl p-12 flex flex-col items-center justify-center cursor-pointer transition-all duration-300 hover:bg-surface-container-low border border-outline-variant/15 relative group overflow-hidden ${
+              isDragOver ? 'ring-2 ring-primary bg-surface-container-low' : ''
+            }`} 
+            style={{ minHeight: '400px', boxShadow: '0 8px 32px rgba(25, 27, 35, 0.02)' }}
+          >
+            {/* Inner Tonal Nesting */}
+            <div className="absolute inset-4 rounded-lg bg-surface-container pointer-events-none opacity-20 group-hover:opacity-40 transition-opacity"></div>
+            
+            <div className="bg-primary-fixed/30 p-6 rounded-full mb-6 relative z-10 group-hover:scale-110 transition-transform duration-300 text-primary">
+              <UploadFileIcon className="w-12 h-12" />
             </div>
-          )}
-        </div>
+            
+            <h3 className="font-headline text-xl font-bold text-on-surface mb-2 relative z-10">
+              Seleccionar archivo
+            </h3>
+            <p className="font-body text-on-surface-variant text-sm mb-8 relative z-10 text-center max-w-md">
+              Formatos compatibles: .json. Tamaño máximo recomendado 500MB.
+            </p>
+
+            {/* Supported Formats Pills */}
+            <div className="flex flex-wrap gap-4 justify-center relative z-10">
+              {['.JSON'].map((ext) => (
+                <div key={ext} className="px-4 py-2 bg-surface-container-highest rounded-full flex items-center gap-2">
+                  <span className="font-label text-xs font-semibold text-on-surface-variant tracking-wider uppercase">
+                    {ext}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Input file */}
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleFileChange} 
+              className="hidden" 
+              accept=".json"
+            />
+
+            {/* Overlay for Drop state */}
+            {isDragOver && (
+              <div className="absolute inset-0 bg-primary/5 flex items-center justify-center z-20 border-2 border-dashed border-primary rounded-xl">
+                <span className="font-headline text-primary font-bold text-xl">Suelte el archivo aquí</span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div 
+            className="w-full bg-surface-container-lowest rounded-xl p-12 flex flex-col items-center justify-center border border-outline-variant/15 relative group overflow-hidden" 
+            style={{ minHeight: '400px', boxShadow: '0 8px 32px rgba(25, 27, 35, 0.02)' }}
+          >
+            {/* Inner Tonal Nesting */}
+            <div className="absolute inset-4 rounded-lg bg-surface-container pointer-events-none opacity-20 group-hover:opacity-40 transition-opacity"></div>
+            
+            <div className="bg-primary-fixed/30 p-6 rounded-full mb-6 relative z-10 group-hover:scale-110 transition-transform duration-300 text-primary animate-pulse">
+              <DownloadIcon className="w-12 h-12" />
+            </div>
+            
+            <h3 className="font-headline text-xl font-bold text-on-surface mb-2 relative z-10">
+              Importar desde Revit
+            </h3>
+            <p className="font-body text-on-surface-variant text-sm mb-8 relative z-10 text-center max-w-md">
+              Obtén el modelo BIM exportado recientemente desde tu sesión de Revit usando el conector local.
+            </p>
+
+            <button
+              onClick={handleFetchFromRevit}
+              disabled={isFetchingRevit}
+              className={`px-8 py-3 rounded-lg font-label text-sm font-bold tracking-wide flex items-center gap-2 shadow-md transition-all select-none hover:scale-[1.01] active:scale-[0.99] ${
+                isFetchingRevit
+                  ? 'bg-surface-container-high text-on-surface-variant/40 cursor-not-allowed'
+                  : 'signature-gradient text-white hover:shadow-lg cursor-pointer bg-[#3b82f6]'
+              }`}
+            >
+              {isFetchingRevit ? (
+                <>
+                  <SyncIcon className="w-5 h-5 animate-spin" />
+                  <span>Obteniendo modelo...</span>
+                </>
+              ) : (
+                <>
+                  <SyncIcon className="w-5 h-5" />
+                  <span>Obtener Modelo Activo</span>
+                </>
+              )}
+            </button>
+          </div>
+        )
       ) : (
+
         /* Progress / File Details Card */
         <div 
           className="w-full bg-surface-container-lowest rounded-xl p-12 flex flex-col items-center justify-center border border-outline-variant/15 relative" 
