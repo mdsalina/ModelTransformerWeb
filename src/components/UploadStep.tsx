@@ -13,8 +13,9 @@ export const UploadStep = ({ onFileUploaded, fileDetails, onClearFile }: UploadS
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState<'json' | 'revit'>('json');
+  const [activeTab, setActiveTab] = useState<'json' | 'revit' | 'etabs'>('json');
   const [isFetchingRevit, setIsFetchingRevit] = useState(false);
+  const [isFetchingEtabs, setIsFetchingEtabs] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFetchFromRevit = async () => {
@@ -71,6 +72,60 @@ export const UploadStep = ({ onFileUploaded, fileDetails, onClearFile }: UploadS
       
     } catch (err: any) {
       setIsFetchingRevit(false);
+      setError(err.message || 'Error de conexión con el agente local. Asegúrese de que el servidor está corriendo en el puerto 18290.');
+    }
+  };
+
+  const handleFetchFromEtabs = async () => {
+    setIsFetchingEtabs(true);
+    setError('');
+    
+    try {
+      const response = await fetch('http://127.0.0.1:18290/api/getEtabs');
+      
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Error al obtener el modelo desde ETABS.');
+      }
+      
+      const parsedData = await response.json() as JsonModelData;
+      
+      if (
+        !parsedData.project_info ||
+        !parsedData.levels ||
+        !parsedData.grids ||
+        !parsedData.sections ||
+        !parsedData.elements
+      ) {
+        throw new Error('El modelo recibido de ETABS no contiene la estructura esperada de un modelo BIM (project_info, levels, grids, sections, elements).');
+      }
+      
+      setUploading(true);
+      setProgress(0);
+      
+      const totalSteps = 20;
+      let currentStep = 0;
+      const interval = setInterval(() => {
+        currentStep++;
+        const currentProgress = Math.min((currentStep / totalSteps) * 100, 100);
+        setProgress(currentProgress);
+        
+        if (currentStep >= totalSteps) {
+          clearInterval(interval);
+          setUploading(false);
+          setIsFetchingEtabs(false);
+          onFileUploaded({
+            name: "Modelo ETABS (Directo)",
+            size: JSON.stringify(parsedData).length,
+            progress: 100,
+            isUploaded: true,
+            format: 'JSON',
+          }, parsedData);
+        }
+      }, 50);
+      
+    } catch (err: any) {
+      setIsFetchingEtabs(false);
       setError(err.message || 'Error de conexión con el agente local. Asegúrese de que el servidor está corriendo en el puerto 18290.');
     }
   };
@@ -214,6 +269,17 @@ export const UploadStep = ({ onFileUploaded, fileDetails, onClearFile }: UploadS
             <DownloadIcon className="w-4 h-4" />
             <span>Obtener de Revit</span>
           </button>
+          <button
+            onClick={() => { setActiveTab('etabs'); setError(''); }}
+            className={`px-6 py-2.5 rounded-lg text-sm font-semibold tracking-tight transition-all duration-200 select-none flex items-center gap-2 ${
+              activeTab === 'etabs'
+                ? 'bg-[#3b82f6] text-white shadow-sm'
+                : 'text-[#191b23]/70 hover:text-[#191b23] hover:bg-surface-container-highest/50'
+            }`}
+          >
+            <DownloadIcon className="w-4 h-4" />
+            <span>Obtener de ETABS</span>
+          </button>
         </div>
       )}
 
@@ -277,7 +343,7 @@ export const UploadStep = ({ onFileUploaded, fileDetails, onClearFile }: UploadS
               </div>
             )}
           </div>
-        ) : (
+        ) : activeTab === 'revit' ? (
           <div 
             className="w-full bg-surface-container-lowest rounded-xl p-12 flex flex-col items-center justify-center border border-outline-variant/15 relative group overflow-hidden" 
             style={{ minHeight: '400px', boxShadow: '0 8px 32px rgba(25, 27, 35, 0.02)' }}
@@ -309,6 +375,47 @@ export const UploadStep = ({ onFileUploaded, fileDetails, onClearFile }: UploadS
                 <>
                   <SyncIcon className="w-5 h-5 animate-spin" />
                   <span>Obteniendo modelo...</span>
+                </>
+              ) : (
+                <>
+                  <SyncIcon className="w-5 h-5" />
+                  <span>Obtener Modelo Activo</span>
+                </>
+              )}
+            </button>
+          </div>
+        ) : (
+          <div 
+            className="w-full bg-surface-container-lowest rounded-xl p-12 flex flex-col items-center justify-center border border-outline-variant/15 relative group overflow-hidden" 
+            style={{ minHeight: '400px', boxShadow: '0 8px 32px rgba(25, 27, 35, 0.02)' }}
+          >
+            {/* Inner Tonal Nesting */}
+            <div className="absolute inset-4 rounded-lg bg-surface-container pointer-events-none opacity-20 group-hover:opacity-40 transition-opacity"></div>
+            
+            <div className="bg-primary-fixed/30 p-6 rounded-full mb-6 relative z-10 group-hover:scale-110 transition-transform duration-300 text-primary animate-pulse">
+              <DownloadIcon className="w-12 h-12" />
+            </div>
+            
+            <h3 className="font-headline text-xl font-bold text-on-surface mb-2 relative z-10">
+              Importar desde ETABS
+            </h3>
+            <p className="font-body text-on-surface-variant text-sm mb-8 relative z-10 text-center max-w-md">
+              Obtén el modelo estructural directamente de tu sesión activa de ETABS usando el conector local.
+            </p>
+
+            <button
+              onClick={handleFetchFromEtabs}
+              disabled={isFetchingEtabs}
+              className={`px-8 py-3 rounded-lg font-label text-sm font-bold tracking-wide flex items-center gap-2 shadow-md transition-all select-none hover:scale-[1.01] active:scale-[0.99] ${
+                isFetchingEtabs
+                  ? 'bg-surface-container-high text-on-surface-variant/40 cursor-not-allowed'
+                  : 'signature-gradient text-white hover:shadow-lg cursor-pointer bg-[#3b82f6]'
+              }`}
+            >
+              {isFetchingEtabs ? (
+                <>
+                  <SyncIcon className="w-5 h-5 animate-spin" />
+                  <span>Obteniendo modelo de ETABS...</span>
                 </>
               ) : (
                 <>
